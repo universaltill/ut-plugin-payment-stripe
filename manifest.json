@@ -1,0 +1,25 @@
+{
+  "id": "com.universaltill.payment-stripe",
+  "name": "Stripe Card Payments",
+  "version": "1.0.0",
+  "description": "Take card payments through Stripe. Authorization runs BEFORE the sale completes: the till asks Stripe to charge the amount and only finishes the sale if Stripe approves. Configure your Stripe secret key in the plugin settings. In test mode, amounts ending in .13 decline (Stripe test card), everything else approves.",
+  "author": "Universal Till",
+  "website": "https://universaltill.com",
+  "canonical_type": "payment",
+  "runtime": "wasm",
+  "device_arch": "any",
+  "min_pos_version": "1.0.0",
+  "permissions": ["pos.tender", "events:receive", "net:api.stripe.com", "storage"],
+  "locales": ["en-US"],
+  "entries": [
+    { "type": "payment", "key": "stripe", "label": "Card (Stripe)", "sort_order": 4, "trigger_event": "payment.stripe.requested" }
+  ],
+  "settings": [
+    { "key": "stripe_secret_key", "default_value": "", "scope": "global" },
+    { "key": "currency", "default_value": "gbp", "scope": "global" }
+  ],
+  "entrypoint": "./bin/plugin.wasm",
+  "hooks": [
+    { "event": "payment.stripe.authorize", "action": "stripe.authorize" }
+  ]
+}
