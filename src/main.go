@@ -41,6 +41,9 @@ func httpRequest(rPtr, rLen, dstPtr, dstCap uint32) int32
 //go:wasmimport ut storage_set
 func storageSet(kPtr, kLen, vPtr, vLen uint32) int32
 
+//go:wasmimport ut storage_get
+func storageGet(kPtr, kLen, dstPtr, dstCap uint32) int32
+
 const apiBase = "https://api.stripe.com"
 
 func ptrOf(b []byte) (uint32, uint32) {
@@ -77,11 +80,24 @@ func setting(key string) string {
 	return string(buf[:n])
 }
 
-func saveTxn(v []byte) {
-	kp, kl := ptrOf([]byte("last_txn"))
+func storagePut(key string, v []byte) {
+	kp, kl := ptrOf([]byte(key))
 	vp, vl := ptrOf(v)
 	storageSet(kp, kl, vp, vl)
 }
+
+func storageRead(key string) string {
+	kp, kl := ptrOf([]byte(key))
+	buf := make([]byte, 4096)
+	bp, bc := ptrOf(buf)
+	n := storageGet(kp, kl, bp, bc)
+	if n < 0 || int(n) > len(buf) {
+		return ""
+	}
+	return string(buf[:n])
+}
+
+func saveTxn(v []byte) { storagePut("last_txn", v) }
 
 // stripeCall performs one Stripe API request and returns the decoded response
 // body. ok is false only on a host/transport failure (not an HTTP 4xx, which
@@ -150,12 +166,30 @@ func firstNonEmpty(vals ...string) string {
 func main() {
 	raw, _ := io.ReadAll(os.Stdin)
 	var ev struct {
+		Type    string `json:"type"`
 		Payload struct {
-			Amount int64 `json:"amount"`
+			Amount         int64  `json:"amount"`
+			SaleID         string `json:"sale_id"`
+			OriginalSaleID string `json:"original_sale_id"`
+			Currency       string `json:"currency"`
 		} `json:"payload"`
 	}
 	_ = json.Unmarshal(raw, &ev)
 	amount := ev.Payload.Amount
+
+	// Post-sale settle notification: link the sale id to the PaymentIntent we
+	// just authorized so a later refund can find the charge. Not blocking.
+	if strings.HasSuffix(ev.Type, ".requested") {
+		var last struct {
+			AuthCode string `json:"auth_code"`
+		}
+		_ = json.Unmarshal([]byte(storageRead("last_txn")), &last)
+		if ev.Payload.SaleID != "" && last.AuthCode != "" {
+			storagePut("sale_pi:"+ev.Payload.SaleID, []byte(last.AuthCode))
+			logf("stripe: sale %s settled with %s", ev.Payload.SaleID, last.AuthCode)
+		}
+		os.Exit(0)
+	}
 
 	sk := strings.TrimSpace(setting("stripe_secret_key"))
 	if sk == "" {
@@ -166,10 +200,46 @@ func main() {
 		currency = "gbp"
 	}
 
+	// Provider refund (blocking, pre-return): send the money back on the
+	// original charge. Exit 0 only when Stripe accepts the refund.
+	if strings.HasSuffix(ev.Type, ".refund") {
+		refundCharge(sk, ev.Payload.OriginalSaleID, amount)
+	}
+
 	if readerID := strings.TrimSpace(setting("stripe_reader_id")); readerID != "" {
 		terminalCharge(sk, currency, readerID, amount)
 	}
 	onlineCharge(sk, currency, amount)
+}
+
+// refundCharge refunds (part of) the original sale's PaymentIntent. The PI id
+// was stored at settle time under sale_pi:<sale_id>; without it we must
+// decline — refunding an unknown charge is not possible.
+func refundCharge(sk, originalSaleID string, amount int64) {
+	pi := strings.TrimSpace(storageRead("sale_pi:" + originalSaleID))
+	if originalSaleID == "" || pi == "" {
+		decline(amount, "", "unknown_original_charge")
+	}
+	form := fmt.Sprintf("payment_intent=%s&amount=%d", pi, amount)
+	body, ok := stripeCall("POST", "/v1/refunds", sk, form)
+	if !ok {
+		decline(amount, "", "network_error")
+	}
+	var rf struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Error  struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &rf)
+	switch rf.Status {
+	case "succeeded", "pending":
+		logf("stripe: REFUNDED %d on %s (%s, %s)", amount, pi, rf.ID, rf.Status)
+		approve(amount, "", rf.ID)
+	}
+	decline(amount, "", firstNonEmpty(rf.Error.Code, "refund_failed"))
 }
 
 // terminalCharge drives a Stripe Terminal reader (card-present). In test mode
