@@ -1,0 +1,96 @@
+name: Release
+
+# Package and publish this payment plugin to the marketplace. CI orchestrates the
+# same repo scripts used locally (scripts/package.sh, scripts/publish.sh,
+# scripts/approve.sh); no release logic lives in YAML.
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        type: choice
+        options: [stable, beta, alpha]
+        default: stable
+      publish:
+        description: "Upload to the marketplace (untick for a dry-run package)"
+        type: boolean
+        default: true
+
+jobs:
+  package-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Build WASI module
+        run: scripts/build.sh
+
+      - name: Validate manifest + plugin manifest
+        run: scripts/validate.sh
+
+      - name: Verify tag matches manifest version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$version" ]; then
+            echo "ERROR: tag v${tag} does not match manifest version ${version}" >&2
+            exit 1
+          fi
+
+      - name: Package release artifact
+        run: scripts/package.sh
+
+      - name: Create GitHub Release (direct-download link for self-hosters)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          id=$(python3 -c "import json;print(json.load(open('manifest.json'))['id'])")
+          version=$(python3 -c "import json;print(json.load(open('manifest.json'))['version'])")
+          artifact=$(ls dist/*_universal.tar.gz)
+          cp "$artifact" dist/latest.tar.gz
+          cp "${artifact}.sha256" dist/latest.tar.gz.sha256
+          gh release create "${GITHUB_REF_NAME}" \
+            "$artifact" "${artifact}.sha256" dist/latest.tar.gz dist/latest.tar.gz.sha256 \
+            --title "${id} ${version}" \
+            --notes "Built from tag ${GITHUB_REF_NAME}. releases/latest/download/latest.tar.gz always points at whichever release is newest."
+
+      - name: Upload artifact to workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-universal
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+      - name: Publish to marketplace
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          MARKETPLACE_BASE_URL: ${{ secrets.MARKETPLACE_BASE_URL }}
+          MARKETPLACE_UPLOAD_TOKEN: ${{ secrets.MARKETPLACE_UPLOAD_TOKEN }}
+          MARKETPLACE_LISTING_ID: ${{ vars.MARKETPLACE_LISTING_ID }}
+          MARKETPLACE_CHANNEL: ${{ inputs.channel || 'stable' }}
+        run: scripts/publish.sh
+
+      # Dev-marketplace convenience: the pipeline is trusted end-to-end, so the
+      # release is auto-approved (review-assign + approve, which signs it).
+      # Unset the AUTO_APPROVE repo variable to fall back to human review.
+      - name: Auto-approve on the dev marketplace
+        if: (github.event_name == 'push' || inputs.publish) && vars.AUTO_APPROVE == 'true'
+        env:
+          MARKETPLACE_BASE_URL: ${{ secrets.MARKETPLACE_BASE_URL }}
+          MARKETPLACE_UPLOAD_TOKEN: ${{ secrets.MARKETPLACE_UPLOAD_TOKEN }}
+        run: scripts/approve.sh
