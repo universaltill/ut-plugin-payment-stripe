@@ -11,6 +11,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+      - name: go vet
+        # Cross-compiled to match scripts/build.sh's actual GOOS/GOARCH: this
+        # plugin's entry point is behind a `//go:build wasip1` tag, so host
+        # `go vet ./...` silently skips it entirely (ut-docs#166 review).
+        run: GOOS=wasip1 GOARCH=wasm go vet ./...
+      - name: gofmt check
+        run: |
+          fmt_out=$(gofmt -l .)
+          if [ -n "$fmt_out" ]; then
+            echo "gofmt found unformatted files:" >&2
+            echo "$fmt_out" >&2
+            exit 1
+          fi
       - name: Build WASI module
         run: scripts/build.sh
       - name: Validate manifest + plugin manifest

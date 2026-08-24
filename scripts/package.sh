@@ -19,5 +19,9 @@ entries=(manifest.json README.md bin)
 # COPYFILE_DISABLE stops macOS tar shipping AppleDouble ._* junk (the
 # marketplace bundle-hygiene gate rejects it).
 COPYFILE_DISABLE=1 tar -czf "$OUT" "${entries[@]}"
-if command -v sha256sum >/dev/null 2>&1; then sha256sum "$OUT" > "${OUT}.sha256"; else shasum -a 256 "$OUT" > "${OUT}.sha256"; fi
+# cd into dist/ first so the recorded checksum names the bare filename, not
+# "dist/<file>" — a self-hoster downloading the artifact + .sha256 pair into
+# one directory runs `sha256sum -c`, which fails to find a "dist/..." path
+# (ut-docs#166).
+if command -v sha256sum >/dev/null 2>&1; then (cd "$(dirname "$OUT")" && sha256sum "$(basename "$OUT")") > "${OUT}.sha256"; else (cd "$(dirname "$OUT")" && shasum -a 256 "$(basename "$OUT")") > "${OUT}.sha256"; fi
 echo "packaged $OUT"
