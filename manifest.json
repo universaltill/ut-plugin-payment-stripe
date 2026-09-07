@@ -1,7 +1,7 @@
 {
   "id": "com.universaltill.payment-stripe",
   "name": "Stripe Card Payments",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Take card payments through Stripe. Authorization runs BEFORE the sale completes: the till asks Stripe to charge the amount and only finishes the sale if Stripe approves. Set your Stripe SECRET key (sk_...) in the settings. For card-present payments, also set a Stripe Terminal reader id (stripe_reader_id) \u2014 the till drives the reader (Reader S700 / WisePOS E / M2, or a test simulated reader). With no reader id it runs an online/demo charge; in test mode amounts ending .13 decline. Card refunds are wired too: refunding a Stripe sale on the till refunds the original charge automatically.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
@@ -31,7 +31,8 @@
     {
       "key": "stripe_secret_key",
       "default_value": "",
-      "scope": "global"
+      "scope": "global",
+      "type": "secret"
     },
     {
       "key": "currency",
