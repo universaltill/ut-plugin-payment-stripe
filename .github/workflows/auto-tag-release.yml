@@ -1,0 +1,116 @@
+name: Auto-tag release
+
+# Tags a release the moment main's manifest.json version has no matching git
+# tag yet, so a merged version bump is never stuck waiting for a human who
+# can push tags (ut-docs#1139, #1241, #1694). The cloud pipeline's own
+# credentials get HTTP 403 on tag-ref pushes; this workflow's GITHUB_TOKEN is
+# a different actor, scoped only to this repo, and does the tagging instead.
+# (If it turns out the 403 is actually a repository ruleset on refs/tags/**
+# rather than a credential restriction, GITHUB_TOKEN would need GitHub
+# Actions added to that ruleset's bypass list — the tag push below fails
+# loudly, not silently, if that's the case; see the review note on ut-docs#1694.)
+#
+# This workflow only creates the tag and then starts release.yml on it —
+# release.yml does the actual build/package/publish, unchanged. The explicit
+# dispatch is required, not optional: GitHub never starts a workflow from an
+# event (a tag push included) that was made with a workflow's own
+# GITHUB_TOKEN — that is its guard against recursive runs — and
+# workflow_dispatch is the documented exception. Dispatching release.yml on
+# the tag ref makes github.ref = refs/tags/vX.Y.Z inside it, so its tag-only
+# steps (tag-vs-manifest check, GitHub Release) run exactly as they would for
+# a tag a human had pushed.
+#
+# This file is identical across the plugin repos that carry it; the only
+# per-repo input is the repo's own manifest.json, read generically.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write   # push the tag
+  actions: write    # dispatch release.yml on the new tag
+
+jobs:
+  tag-if-version-moved:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need full tag history, not just the latest commit
+
+      - name: Tag if manifest.json's version has no matching tag yet
+        id: tag
+        run: |
+          set -euo pipefail
+          version=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+
+          # Defense in depth: scripts/validate.sh already enforces this shape
+          # on every PR (ci.yml), but this workflow runs on push to main with
+          # no such gate of its own, and $version is interpolated straight
+          # into $GITHUB_OUTPUT below.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "ERROR: manifest.json version '${version}' doesn't look like a semver string — refusing to tag." >&2
+            exit 1
+          fi
+
+          tag="v${version}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "Tag ${tag} already exists — manifest version unchanged since last release. Nothing to do."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Manifest version ${version} has no ${tag} tag yet — creating it."
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${tag}" -m "Release ${tag} (auto-tagged from manifest.json version on merge to main)"
+
+          # Explicit refspec (not a bare tag name) so this can never be
+          # misread as a push to a same-named branch.
+          if ! git push origin "refs/tags/${tag}:refs/tags/${tag}"; then
+            # Idempotency under a race: if another concurrent run already
+            # pushed the same tag, the end state we wanted is already true
+            # (and that run is the one dispatching release.yml, not us).
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "Tag ${tag} was pushed by a concurrent run — treating as success."
+              echo "created=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Not a known concurrent-run race and not confirmed on origin
+            # either: could be a genuine push failure (network flake) OR a
+            # ruleset silently rejecting github-actions[bot] specifically.
+            # Fail loudly rather than let a "green" run hide a tag that
+            # never actually landed — this is exactly the failure mode this
+            # workflow exists to prevent.
+            echo "ERROR: failed to push ${tag} and it does not exist on origin either." >&2
+            exit 1
+          fi
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Start release.yml on the new tag
+        if: steps.tag.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # Same inputs a human would pick for a tag release; running on the
+          # tag ref is what makes release.yml take its tag-push code path.
+          for attempt in 1 2 3; do
+            if gh workflow run release.yml --ref "${TAG}" -f channel=stable -f publish=true; then
+              echo "Dispatched release.yml on ${TAG}."
+              exit 0
+            fi
+            echo "Dispatch attempt ${attempt} failed; retrying in 5s..." >&2
+            sleep 5
+          done
+          # The tag IS on origin at this point, so a rerun of this workflow
+          # will (correctly) see it and do nothing — the recovery is to
+          # dispatch release.yml on the tag by hand, not to rerun this job.
+          echo "ERROR: tag ${TAG} was pushed but release.yml could not be dispatched on it." >&2
+          echo "Recover with: gh workflow run release.yml --ref ${TAG} -f channel=stable -f publish=true" >&2
+          exit 1
