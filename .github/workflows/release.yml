@@ -52,7 +52,7 @@ jobs:
       - name: Package release artifact
         run: scripts/package.sh
 
-      - name: Create GitHub Release (source archive — not for till import; use the Marketplace)
+      - name: Create GitHub Release (unsigned bundle — not for production till import; use the Marketplace)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -72,7 +72,7 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             "$artifact" "${artifact}.sha256" dist/latest.tar.gz dist/latest.tar.gz.sha256 \
             --title "${id} ${version}" \
-            --notes "Source archive built from tag ${GITHUB_REF_NAME} — unsigned and not installable on a till; install via the Universal Till Marketplace once this release is approved. releases/latest/download/latest.tar.gz always points at whichever GitHub Release is newest (reference only)."
+            --notes "Unsigned plugin bundle built from tag ${GITHUB_REF_NAME} — not installable on a production till; released to the Universal Till Marketplace for install once approved. releases/latest/download/latest.tar.gz always points at whichever GitHub Release is newest (reference only)."
 
       - name: Upload artifact to workflow run
         uses: actions/upload-artifact@v4
