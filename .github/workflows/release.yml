@@ -27,11 +27,11 @@ jobs:
   package-and-publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.27"
+          go-version-file: go.mod
 
       - name: Build WASI module
         run: scripts/build.sh
@@ -75,7 +75,7 @@ jobs:
             --notes "Unsigned plugin bundle built from tag ${GITHUB_REF_NAME} — not installable on a production till; released to the Universal Till Marketplace for install once approved. releases/latest/download/latest.tar.gz always points at whichever GitHub Release is newest (reference only)."
 
       - name: Upload artifact to workflow run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-universal
           path: |
