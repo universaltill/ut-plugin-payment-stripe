@@ -30,3 +30,21 @@ jobs:
         run: scripts/validate.sh
       - name: Package (dry run)
         run: scripts/package.sh
+  version-bump:
+    # PR-only: this compares the PR's base/head, which push/schedule/
+    # workflow_dispatch events don't carry a meaningful pair for.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Need history back to the PR base, not just a shallow tip.
+          fetch-depth: 0
+      - name: Version-bump guard self-tests
+        if: always()
+        run: scripts/check-version-bump.test.sh
+      - name: Require a manifest.json version bump on shipped-file changes (ut-docs#1940, ut-docs#4917)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: scripts/check-version-bump.sh
