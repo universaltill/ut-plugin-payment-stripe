@@ -56,6 +56,9 @@ SHIPPED_PATTERNS=(
     'go.mod'
     'go.sum'
     'scripts/build.sh'
+    # The packaging recipe: it decides what goes into the release artifact
+    # (entries, tar flags), so an edit to it changes what ships (ut-docs#5147).
+    'scripts/package.sh'
 )
 
 # What package.sh bundles, for the failure text in the shared body.
