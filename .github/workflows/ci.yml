@@ -16,6 +16,10 @@ jobs:
         # plugin's entry point is behind a `//go:build wasip1` tag, so host
         # `go vet ./...` silently skips it entirely (ut-docs#166 review).
         run: GOOS=wasip1 GOARCH=wasm go vet ./...
+      - name: go test
+        # Host GOOS/GOARCH: only the untagged terminal.go flow and its tests
+        # compile here; main.go's wasip1-only host imports don't (ut-docs#6304).
+        run: go test ./...
       - name: gofmt check
         run: |
           fmt_out=$(gofmt -l .)

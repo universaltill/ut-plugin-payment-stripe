@@ -28,6 +28,18 @@ the integration. A real deployment swaps the test `payment_method` for a live
 card source — **Stripe Terminal** (a certified reader) is the POS path. The
 authorize/approve/decline logic and settings are unchanged.
 
+### Reader timeout (late taps)
+
+The till waits 30 seconds for a card payment. With a reader set
+(`stripe_reader_id`), the customer has about 18 seconds to tap; then the plugin
+cancels the reader prompt and the PaymentIntent, so a tap after the till gave up
+is refused, never charged. If the card was already being processed, the plugin
+waits for the result and reports a payment that went through as paid. If Stripe
+still has no answer, the payment is declined as `outcome_unknown`: tap **Pay**
+again on the same basket and the plugin checks that payment first (it approves
+it if it went through, and never charges twice). If you change the basket
+instead, check the reader or the Stripe dashboard before charging again.
+
 ## Build
 
 ```sh

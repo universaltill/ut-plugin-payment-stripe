@@ -10,7 +10,9 @@
 //   - TERMINAL (card-present) when `stripe_reader_id` is set: drives a Stripe
 //     Terminal reader (real, e.g. Reader S700/WisePOS E/M2, or a test simulated
 //     reader). Creates a card_present PaymentIntent, processes it on the reader,
-//     and (in test mode) presents a simulated card, then polls to the result.
+//     and (in test mode) presents a simulated card, then polls to the result —
+//     inside the till's 30 s payment gate, cancelling the reader and the
+//     PaymentIntent before it closes (terminal.go, ut-docs#6304).
 //   - ONLINE (no reader): charges a test payment method server-side — a demo
 //     flow; amounts whose minor units end in 13 decline.
 //
@@ -103,13 +105,22 @@ func saveTxn(v []byte) { storagePut("last_txn", v) }
 // body. ok is false only on a host/transport failure (not an HTTP 4xx, which
 // still returns a body describing the error).
 func stripeCall(method, path, sk, form string) (body []byte, ok bool) {
+	return stripeCallIdem(method, path, sk, form, "")
+}
+
+// stripeCallIdem is stripeCall with an optional Idempotency-Key header.
+func stripeCallIdem(method, path, sk, form, idemKey string) (body []byte, ok bool) {
+	headers := map[string]string{
+		"Authorization": "Bearer " + sk,
+		"Content-Type":  "application/x-www-form-urlencoded",
+	}
+	if idemKey != "" {
+		headers["Idempotency-Key"] = idemKey
+	}
 	reqJSON, _ := json.Marshal(map[string]any{
-		"method": method,
-		"url":    apiBase + path,
-		"headers": map[string]string{
-			"Authorization": "Bearer " + sk,
-			"Content-Type":  "application/x-www-form-urlencoded",
-		},
+		"method":   method,
+		"url":      apiBase + path,
+		"headers":  headers,
 		"body_b64": base64.StdEncoding.EncodeToString([]byte(form)),
 	})
 	rp, rl := ptrOf(reqJSON)
@@ -154,18 +165,28 @@ func decline(amount int64, currency, reason string) {
 	os.Exit(declined)
 }
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+// hostStripe, realClock and pluginKV wire terminal.go's flow to the host.
+type hostStripe struct{ sk string }
+
+func (h hostStripe) call(method, path, form, idemKey string) ([]byte, bool) {
+	return stripeCallIdem(method, path, h.sk, form, idemKey)
 }
 
+type realClock struct{}
+
+func (realClock) now() time.Time        { return time.Now() }
+func (realClock) sleep(d time.Duration) { time.Sleep(d) }
+
+type pluginKV struct{}
+
+func (pluginKV) get(k string) string    { return storageRead(k) }
+func (pluginKV) put(k string, v []byte) { storagePut(k, v) }
+
 func main() {
+	start := time.Now() // terminal.go's deadlines count from here (ut-docs#6304)
 	raw, _ := io.ReadAll(os.Stdin)
 	var ev struct {
+		ID      string `json:"id"`
 		Type    string `json:"type"`
 		Payload struct {
 			Amount         int64  `json:"amount"`
@@ -207,7 +228,16 @@ func main() {
 	}
 
 	if readerID := strings.TrimSpace(setting("stripe_reader_id")); readerID != "" {
-		terminalCharge(sk, currency, readerID, amount)
+		c := &terminalCharger{
+			api: hostStripe{sk: sk}, clk: realClock{}, kv: pluginKV{},
+			sk: sk, currency: currency, readerID: readerID,
+			requestID: ev.ID, amount: amount, start: start,
+		}
+		if out := c.run(); out.approved {
+			approve(amount, currency, out.authCode)
+		} else {
+			decline(amount, currency, out.reason)
+		}
 	}
 	onlineCharge(sk, currency, amount)
 }
@@ -240,71 +270,6 @@ func refundCharge(sk, originalSaleID string, amount int64) {
 		approve(amount, "", rf.ID)
 	}
 	decline(amount, "", firstNonEmpty(rf.Error.Code, "refund_failed"))
-}
-
-// terminalCharge drives a Stripe Terminal reader (card-present). In test mode
-// (sk_test_) it presents a simulated card so the whole flow works with no
-// hardware; with a live key + real reader the customer taps their card.
-func terminalCharge(sk, currency, readerID string, amount int64) {
-	// 1. Create a card_present PaymentIntent (auto-captured on success).
-	form := fmt.Sprintf("amount=%d&currency=%s&payment_method_types[]=card_present&capture_method=automatic", amount, currency)
-	body, ok := stripeCall("POST", "/v1/payment_intents", sk, form)
-	if !ok {
-		decline(amount, currency, "network_error")
-	}
-	var pi struct {
-		ID    string `json:"id"`
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(body, &pi)
-	if pi.ID == "" {
-		decline(amount, currency, firstNonEmpty(pi.Error.Code, "create_failed"))
-	}
-
-	// 2. Tell the reader to collect + process the payment.
-	body, ok = stripeCall("POST", "/v1/terminal/readers/"+readerID+"/process_payment_intent", sk, "payment_intent="+pi.ID)
-	if !ok {
-		decline(amount, currency, "network_error")
-	}
-	var rd struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(body, &rd)
-	if rd.Error.Code != "" {
-		logf("stripe: reader %s: %s", rd.Error.Code, rd.Error.Message)
-		decline(amount, currency, firstNonEmpty(rd.Error.Code, "reader_error"))
-	}
-
-	// 3. Test mode: present a simulated card so the PI can complete.
-	if strings.HasPrefix(sk, "sk_test_") {
-		stripeCall("POST", "/v1/test_helpers/terminal/readers/"+readerID+"/present_payment_method", sk, "")
-	}
-
-	// 4. Poll the PaymentIntent to a terminal state. Up to ~60s so a live
-	// customer has time to tap; the simulated reader completes at once.
-	for i := 0; i < 60; i++ {
-		body, ok = stripeCall("GET", "/v1/payment_intents/"+pi.ID, sk, "")
-		if ok {
-			var p struct {
-				Status string `json:"status"`
-			}
-			_ = json.Unmarshal(body, &p)
-			switch p.Status {
-			case "succeeded", "requires_capture":
-				approve(amount, currency, pi.ID)
-			case "canceled":
-				decline(amount, currency, "canceled")
-			}
-		}
-		time.Sleep(time.Second)
-	}
-	decline(amount, currency, "reader_timeout")
 }
 
 // onlineCharge is the no-reader demo flow: charge a test payment method
