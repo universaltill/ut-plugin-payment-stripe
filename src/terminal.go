@@ -71,15 +71,6 @@ type terminalCharger struct {
 	start     time.Time
 }
 
-// attemptRecord is what a retry of the same request id needs: the last
-// PaymentIntent created for it and how many were created before it (the
-// idempotency key's suffix — the key of a cancelled PaymentIntent would
-// only replay that cancelled PaymentIntent).
-type attemptRecord struct {
-	PI  string `json:"pi"`
-	Seq int    `json:"seq"`
-}
-
 // PaymentIntent outcomes this flow distinguishes.
 const (
 	piPaid      = "paid"
@@ -87,45 +78,46 @@ const (
 	piUnknown   = "unknown"
 )
 
+// retryStartBudget: settling an earlier attempt can take most of the gate;
+// past this point a fresh charge would be cancelled almost at once, so the
+// retry declines and the cashier's next tap starts clean.
+const retryStartBudget = 6 * time.Second
+
 func (c *terminalCharger) elapsed() time.Duration { return c.clk.now().Sub(c.start) }
-
-func (c *terminalCharger) attemptKey() string { return "attempt:" + c.requestID }
-
-func (c *terminalCharger) loadAttempt() attemptRecord {
-	var rec attemptRecord
-	if c.requestID != "" {
-		_ = json.Unmarshal([]byte(c.kv.get(c.attemptKey())), &rec)
-	}
-	return rec
-}
-
-func (c *terminalCharger) saveAttempt(rec attemptRecord) {
-	if c.requestID == "" {
-		return
-	}
-	b, _ := json.Marshal(rec)
-	c.kv.put(c.attemptKey(), b)
-}
 
 func (c *terminalCharger) paid(pi string) outcome { return outcome{approved: true, authCode: pi} }
 
 func refused(reason string) outcome { return outcome{reason: reason} }
 
+// stripeError is the error object of a Stripe API response; present when
+// any of its fields is set (some errors carry no code).
+type stripeError struct {
+	Code    string `json:"code"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+func (e stripeError) present() bool { return e.Code != "" || e.Type != "" || e.Message != "" }
+
 func (c *terminalCharger) run() outcome {
 	// 0. A retry of the same tender: settle the earlier PaymentIntent
 	// first. A late tap that went through is this sale's payment.
-	rec := c.loadAttempt()
-	if rec.PI != "" {
-		switch c.settle(rec.PI) {
+	rec, found := findAttempt(c.kv, c.requestID)
+	if found && rec.Ref != "" {
+		switch c.settle(rec.Ref, true, true) {
 		case piPaid:
-			return c.paid(rec.PI)
+			return c.paid(rec.Ref)
 		case piCancelled:
-			rec = attemptRecord{Seq: rec.Seq + 1}
-			c.saveAttempt(rec)
+			rec = attemptEntry{ID: c.requestID, Seq: rec.Seq + 1}
+			putAttempt(c.kv, rec)
+			if c.elapsed() > retryStartBudget {
+				return refused("previous_attempt_settled")
+			}
 		default:
 			return refused("outcome_unknown")
 		}
 	}
+	rec.ID = c.requestID
 
 	// 1. Create a card_present PaymentIntent (auto-captured on success).
 	idem := ""
@@ -138,42 +130,48 @@ func (c *terminalCharger) run() outcome {
 	}
 	body, ok := c.api.call("POST", "/v1/payment_intents", form, idem)
 	if !ok {
+		// Keep the key: Stripe returns the same PaymentIntent if this
+		// request did create one.
 		return refused("network_error")
 	}
 	var pi struct {
-		ID    string `json:"id"`
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
+		ID    string      `json:"id"`
+		Error stripeError `json:"error"`
 	}
 	_ = json.Unmarshal(body, &pi)
 	if pi.ID == "" {
+		// Stripe replays a stored error for the same Idempotency-Key for
+		// 24 h; move on to a new key so a retry can succeed. An unprocessed
+		// card_present PaymentIntent can't be charged, so this is safe.
+		putAttempt(c.kv, attemptEntry{ID: c.requestID, Seq: rec.Seq + 1})
 		return refused(firstNonEmpty(pi.Error.Code, "create_failed"))
 	}
-	rec.PI = pi.ID
-	c.saveAttempt(rec)
+	rec.Ref = pi.ID
+	rec.At = c.clk.now().Unix()
+	putAttempt(c.kv, rec)
 
-	// 2. Tell the reader to collect + process the payment. If it refuses
-	// (or we can't tell), cancel the PaymentIntent so nothing collects it
-	// later.
+	// 2. Tell the reader to collect + process the payment.
 	body, ok = c.api.call("POST", "/v1/terminal/readers/"+c.readerID+"/process_payment_intent", "payment_intent="+pi.ID, "")
 	var rd struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
+		Error stripeError `json:"error"`
 	}
 	if ok {
 		_ = json.Unmarshal(body, &rd)
 	}
-	if !ok || rd.Error.Code != "" {
-		switch c.settle(pi.ID) {
+	if !ok || rd.Error.present() {
+		// The reader refused (or we can't tell): cancel the PaymentIntent so
+		// nothing collects it later. A definite refusal means this reader is
+		// not showing our payment — never cancel_action whatever it is doing.
+		// terminal_reader_timeout is Stripe's documented false negative: the
+		// reader may have the payment, so stop its prompt too.
+		switch c.settle(pi.ID, false, !ok || rd.Error.Code == "terminal_reader_timeout") {
 		case piPaid:
 			return c.paid(pi.ID)
 		case piCancelled:
 			if !ok {
 				return refused("network_error")
 			}
-			return refused(rd.Error.Code)
+			return refused(firstNonEmpty(rd.Error.Code, rd.Error.Type, "reader_error"))
 		default:
 			return refused("outcome_unknown")
 		}
@@ -186,17 +184,18 @@ func (c *terminalCharger) run() outcome {
 
 	// 4. Give the customer pollBudget to tap.
 	for c.elapsed() < pollBudget {
-		switch c.status(pi.ID) {
-		case "succeeded", "requires_capture":
+		switch classify(c.status(pi.ID)) {
+		case piPaid:
 			return c.paid(pi.ID)
-		case "canceled":
+		case piCancelled:
 			return refused("canceled")
 		}
 		c.clk.sleep(pollInterval)
 	}
 
 	// 5. Out of time: stop the reader, then report what really happened.
-	switch c.settle(pi.ID) {
+	// The poll just read the status, so go straight to cancelling.
+	switch c.settle(pi.ID, false, true) {
 	case piPaid:
 		return c.paid(pi.ID)
 	case piCancelled:
@@ -218,6 +217,10 @@ func (c *terminalCharger) status(pi string) string {
 	return p.Status
 }
 
+// classify maps a PaymentIntent status to this flow's outcomes.
+// requires_capture counts as paid only because every PaymentIntent here is
+// created with capture_method=automatic; manual capture would need a
+// capture step before approving.
 func classify(status string) string {
 	switch status {
 	case "succeeded", "requires_capture":
@@ -229,24 +232,30 @@ func classify(status string) string {
 }
 
 // settle makes sure pi can no longer be charged, or finds out it already
-// was: cancel the reader action and the PaymentIntent, then re-check until
-// hardDeadline. A PaymentIntent that is processing (the card was tapped)
-// refuses the cancel and resolves to succeeded or back to collectable.
-func (c *terminalCharger) settle(pi string) string {
-	if s := classify(c.status(pi)); s != piUnknown {
-		return s
+// was: cancel the reader action (when cancelReader) and the PaymentIntent,
+// then re-check until hardDeadline. A PaymentIntent that is processing
+// (the card was tapped) refuses the cancel and resolves to succeeded or
+// back to collectable. readFirst: check the status before cancelling.
+func (c *terminalCharger) settle(pi string, readFirst, cancelReader bool) string {
+	if readFirst {
+		if s := classify(c.status(pi)); s != piUnknown {
+			return s
+		}
 	}
-	c.api.call("POST", "/v1/terminal/readers/"+c.readerID+"/cancel_action", "", "")
-	cancelled := false
+	if cancelReader {
+		c.api.call("POST", "/v1/terminal/readers/"+c.readerID+"/cancel_action", "", "")
+	}
 	for {
-		if !cancelled {
-			body, ok := c.api.call("POST", "/v1/payment_intents/"+pi+"/cancel", "", "")
-			if ok {
-				var p struct {
-					Status string `json:"status"`
-				}
-				_ = json.Unmarshal(body, &p)
-				cancelled = p.Status == "canceled"
+		// Re-sent each round: a processing PaymentIntent refuses the cancel,
+		// but one whose card was declined goes back to collectable.
+		body, ok := c.api.call("POST", "/v1/payment_intents/"+pi+"/cancel", "", "")
+		if ok {
+			var p struct {
+				Status string `json:"status"`
+			}
+			_ = json.Unmarshal(body, &p)
+			if p.Status == "canceled" {
+				return piCancelled
 			}
 		}
 		if s := classify(c.status(pi)); s != piUnknown {

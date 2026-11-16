@@ -12,9 +12,13 @@ swap the endpoint, auth, and request/response shaping. Build: `scripts/build.sh`
 `src/terminal.go` (untagged, `go test`-covered with a fake Stripe/clock in
 `terminal_test.go`; CI runs `go test ./...`). The till kills an authorize call
 at 30 s (`paymentGateTimeout`), so the flow polls 18 s, then cancels the reader
-action and the PaymentIntent and re-checks until 24 s (no call starts after that): paid -> approve, cancelled
--> decline `reader_timeout`, still processing -> decline `outcome_unknown`. The
-PaymentIntent is kept under `attempt:<event id>`; the till re-sends the same id
-on a re-tap of Pay for the same basket (ut-docs#1762), and the retry settles that
-PaymentIntent before creating another (Idempotency-Key `ut-<id>-<seq>`). Never
-move the poll past the host gate or drop a payment that succeeded late.
+action and the PaymentIntent and re-checks until 24 s (no call starts after
+that): paid -> approve, cancelled -> `reader_timeout`, still processing ->
+`outcome_unknown`. PaymentIntents are kept in ONE bounded storage key
+(`attempts`, last 8; host cap is 1024 keys, no delete) under the till's request
+id, which the till re-sends on a re-tap of Pay for the same basket
+(ut-docs#1762); the retry settles that PaymentIntent before creating another
+(Idempotency-Key `ut-<id>-<seq>`, seq bumped after a cancel or a create error,
+since Stripe replays a stored error for 24 h). A definite reader refusal cancels
+only the PaymentIntent, never `cancel_action`. Never move the poll past the host
+gate or drop a payment that succeeded late.

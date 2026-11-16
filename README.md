@@ -32,13 +32,14 @@ authorize/approve/decline logic and settings are unchanged.
 
 The till waits 30 seconds for a card payment. With a reader set
 (`stripe_reader_id`), the customer has about 18 seconds to tap; then the plugin
-cancels the reader prompt and the PaymentIntent, so a tap after the till gave up
-is refused, never charged. If the card was already being processed, the plugin
-waits for the result and reports a payment that went through as paid. If Stripe
-still has no answer, the payment is declined as `outcome_unknown`: tap **Pay**
-again on the same basket and the plugin checks that payment first (it approves
-it if it went through, and never charges twice). If you change the basket
-instead, check the reader or the Stripe dashboard before charging again.
+cancels the reader prompt and the PaymentIntent. A cancelled PaymentIntent can't
+be charged, so a tap after that is refused. If the card was already being read,
+the plugin waits for the result and reports a payment that went through as paid.
+If Stripe gives no answer in time (a very slow network), the payment is declined
+as `outcome_unknown`. Tap **Pay** again on the **same basket** after any card
+timeout: the plugin checks the earlier payment first and approves it if it went
+through, without charging again. If you change the basket instead, check the
+reader or the Stripe dashboard before charging again (ut-docs#6304).
 
 ## Build
 

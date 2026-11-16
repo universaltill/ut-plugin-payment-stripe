@@ -35,13 +35,16 @@ type fakeStripe struct {
 	tapAt   time.Duration // 0 = never taps
 	procDur time.Duration
 
-	pis          map[string]*fakePI
-	order        []string
-	creates      int
-	idemKeys     []string
-	cancelAction int
-	piCancels    int
-	processFails bool
+	pis              map[string]*fakePI
+	order            []string
+	creates          int
+	idemKeys         []string
+	cancelAction     int
+	piCancels        int
+	processFails     bool
+	processErrNoCode bool   // an error object with a message but no code
+	processErrCode   string // overrides processFails' code
+	createErrs       int    // the next N creates answer an api_error
 }
 
 type fakePI struct {
@@ -94,6 +97,11 @@ func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, bool) {
 		if idemKey != "" {
 			f.idemKeys = append(f.idemKeys, idemKey)
 		}
+		if f.createErrs > 0 {
+			f.createErrs--
+			b, _ := json.Marshal(map[string]any{"error": map[string]string{"type": "api_error", "message": "boom"}})
+			return b, true
+		}
 		f.creates++
 		id := "pi_" + string(rune('a'+len(f.order)))
 		f.pis[id] = &fakePI{status: "requires_payment_method"}
@@ -101,7 +109,13 @@ func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, bool) {
 		return piBody(id), true
 	case method == "POST" && strings.HasSuffix(path, "/process_payment_intent"):
 		if f.processFails {
+			if f.processErrCode != "" {
+				return errBody(f.processErrCode), true
+			}
 			return errBody("terminal_reader_offline"), true
+		}
+		if f.processErrNoCode {
+			return []byte(`{"error":{"type":"invalid_request_error","message":"reader busy"}}`), true
 		}
 		id := strings.TrimPrefix(form, "payment_intent=")
 		f.pis[id].onReader = true
@@ -196,8 +210,8 @@ func TestUnsettledAtDeadlineIsOutcomeUnknown(t *testing.T) {
 	if out.approved || out.reason != "outcome_unknown" {
 		t.Fatalf("want declined outcome_unknown, got %+v", out)
 	}
-	if !strings.Contains(kv["attempt:att:0:ab"], "pi_a") {
-		t.Fatalf("attempt record not kept: %q", kv["attempt:att:0:ab"])
+	if !strings.Contains(kv["attempts"], "pi_a") {
+		t.Fatalf("attempt record not kept: %q", kv["attempts"])
 	}
 }
 
@@ -260,6 +274,11 @@ func TestReaderRefusalCancelsPaymentIntent(t *testing.T) {
 	if f.piCancels == 0 {
 		t.Fatal("orphan PaymentIntent was not cancelled")
 	}
+	// A definite refusal means the reader is not showing our payment:
+	// cancelling its action could stop another payment on it.
+	if f.cancelAction != 0 {
+		t.Fatalf("cancel_action sent after a definite reader refusal (%d)", f.cancelAction)
+	}
 }
 
 // A normal tap inside the window approves as before.
@@ -270,5 +289,82 @@ func TestPromptTapApproves(t *testing.T) {
 	out := run(t, newCharger(f, memKV{}, "att:0:ab"), clk)
 	if !out.approved || out.authCode != "pi_a" || f.cancelAction != 0 {
 		t.Fatalf("prompt tap: %+v cancel_action=%d", out, f.cancelAction)
+	}
+}
+
+// An error object with no code is still an error, not a started payment.
+func TestReaderErrorWithoutCodeIsRefusal(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	f := newFakeStripe(clk)
+	f.processErrNoCode = true
+	out := run(t, newCharger(f, memKV{}, "att:0:ab"), clk)
+	if out.approved || out.reason != "invalid_request_error" || f.piCancels == 0 {
+		t.Fatalf("want invalid_request_error + PI cancelled, got %+v (pi cancels %d)", out, f.piCancels)
+	}
+	if clk.t.Sub(f.start) > 5*time.Second {
+		t.Fatalf("waited %s on a payment the reader never started", clk.t.Sub(f.start))
+	}
+}
+
+// Stripe replays a stored error for the same Idempotency-Key; a retry
+// after a failed create must use a new key.
+func TestCreateErrorMovesToNewIdempotencyKey(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	f := newFakeStripe(clk)
+	f.createErrs = 1
+	kv := memKV{}
+	if out := run(t, newCharger(f, kv, "att:0:ab"), clk); out.approved {
+		t.Fatalf("approved on a failed create: %+v", out)
+	}
+	clk.sleep(2 * time.Second)
+	f.start, f.tapAt = clk.t, 3*time.Second
+	out := run(t, newCharger(f, kv, "att:0:ab"), clk)
+	if !out.approved {
+		t.Fatalf("retry after a failed create should charge: %+v", out)
+	}
+	if len(f.idemKeys) != 2 || f.idemKeys[0] == f.idemKeys[1] {
+		t.Fatalf("want two distinct idempotency keys, got %v", f.idemKeys)
+	}
+}
+
+// Settling the earlier attempt used most of the gate: decline rather than
+// start a payment that would be cancelled at once.
+func TestSlowRetrySettleDeclinesInsteadOfStartingLate(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	f := newFakeStripe(clk)
+	kv := memKV{}
+	putAttempt(kv, attemptEntry{ID: "att:0:ab", Ref: "pi_a"})
+	f.pis["pi_a"] = &fakePI{status: "requires_payment_method"}
+	f.order = append(f.order, "pi_a")
+	f.latency = 3 * time.Second
+	out := run(t, newCharger(f, kv, "att:0:ab"), clk)
+	if out.approved || out.reason != "previous_attempt_settled" || f.creates != 0 {
+		t.Fatalf("want previous_attempt_settled and no new PI, got %+v creates=%d", out, f.creates)
+	}
+}
+
+// Only the last maxAttempts tenders are kept, in one storage key.
+func TestAttemptLogIsBounded(t *testing.T) {
+	kv := memKV{}
+	for i := 0; i < maxAttempts+5; i++ {
+		putAttempt(kv, attemptEntry{ID: "id" + string(rune('a'+i)), Ref: "pi"})
+	}
+	if n := len(loadAttempts(kv)); n != maxAttempts || len(kv) != 1 {
+		t.Fatalf("want %d entries in 1 key, got %d entries in %d keys", maxAttempts, n, len(kv))
+	}
+	if _, ok := findAttempt(kv, "ida"); ok {
+		t.Fatal("oldest entry not dropped")
+	}
+}
+
+// terminal_reader_timeout may mean the reader did get the payment: cancel
+// its prompt as well as the PaymentIntent.
+func TestReaderTimeoutErrorAlsoCancelsReaderPrompt(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	f := newFakeStripe(clk)
+	f.processFails, f.processErrCode = true, "terminal_reader_timeout"
+	out := run(t, newCharger(f, memKV{}, "att:0:ab"), clk)
+	if out.approved || f.cancelAction == 0 || f.piCancels == 0 {
+		t.Fatalf("want decline with reader prompt + PI cancelled: %+v cancel_action=%d pi=%d", out, f.cancelAction, f.piCancels)
 	}
 }
