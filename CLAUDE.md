@@ -8,6 +8,8 @@ via `http_request` (needs `net:api.stripe.com`); form-encoded body; parses
 `status == "succeeded"`. Template for other API-based gateways (iyzico, etc.):
 swap the endpoint, auth, and request/response shaping. Build: `scripts/build.sh`.
 
+**Early decline (ut-docs#6440, v1.5.0):** the poll reads `last_payment_error` on the PaymentIntent (`state()`); status `requires_payment_method` + an error + reader action `failed` (a soft decline keeps the action in progress, e.g. PIN prompt: keep polling) = card declined -> `settle` (cancel reader + PI; a tap that slipped in is still approved) then decline with `decline_code` (else `code`). Not verified against a live reader (`blocked:env` item on #6440).
+
 **Reader timeout (ut-docs#6304, v1.3.0):** the Terminal flow lives in
 `src/terminal.go` (untagged, `go test`-covered with a fake Stripe/clock in
 `terminal_test.go`; CI runs `go test ./...`). The till kills an authorize call
