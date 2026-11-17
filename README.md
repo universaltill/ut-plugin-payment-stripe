@@ -9,6 +9,9 @@ finishes if Stripe approves (a decline leaves the basket intact).
 - `stripe_secret_key` — your Stripe secret key (`sk_test_…` for testing,
   `sk_live_…` in production). One plugin, per-merchant key — nothing hardcoded.
 - `currency` — ISO code (default `gbp`; e.g. `aed`, `try`, `usd`).
+- `stripe_reader_id` — the Stripe Terminal reader this till drives (server-driven
+  readers: BBPOS WisePOS E, Stripe Reader S700). Set per till. Without it the
+  plugin makes an online charge instead (test keys only make sense there).
 
 Grant it `net:api.stripe.com` (declared in the manifest).
 

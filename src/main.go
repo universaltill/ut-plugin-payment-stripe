@@ -8,7 +8,7 @@
 //
 // Two modes, chosen by settings:
 //   - TERMINAL (card-present) when `stripe_reader_id` is set: drives a Stripe
-//     Terminal reader (real, e.g. Reader S700/WisePOS E/M2, or a test simulated
+//     Terminal reader (real, e.g. Reader S700 or WisePOS E (server-driven), or a test simulated
 //     reader). Creates a card_present PaymentIntent, processes it on the reader,
 //     and (in test mode) presents a simulated card, then polls to the result —
 //     inside the till's 30 s payment gate, cancelling the reader and the
