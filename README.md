@@ -41,6 +41,10 @@ timeout: the plugin checks the earlier payment first and approves it if it went
 through, without charging again. If you change the basket instead, check the
 reader or the Stripe dashboard before charging again (ut-docs#6304).
 
+A card the reader declines (v1.5.0, ut-docs#6440) is declined at once with
+Stripe's reason (for example `insufficient_funds`) instead of after the 18
+seconds as `reader_timeout`.
+
 ## Refunds (v1.4.0, ut-docs#6438)
 
 Refunding a Stripe sale on the till refunds the original PaymentIntent. The

@@ -45,15 +45,19 @@ type fakeStripe struct {
 	cancelAction     int
 	piCancels        int
 	processFails     bool
-	processErrNoCode bool   // an error object with a message but no code
-	processErrCode   string // overrides processFails' code
-	createErrs       int    // the next N creates answer an api_error
+	processErrNoCode bool          // an error object with a message but no code
+	processErrCode   string        // overrides processFails' code
+	createErrs       int           // the next N creates answer an api_error
+	declineAt        time.Duration // 0 = never; the card is declined on the reader at this time
+	declineCode      string        // last_payment_error.decline_code, default insufficient_funds
+	softDecline      bool          // the reader keeps the action in progress (chip-and-PIN prompt) after the decline
 }
 
 type fakePI struct {
 	status   string // requires_payment_method, processing, succeeded, canceled
 	onReader bool
 	tappedAt time.Time
+	declined bool
 }
 
 func newFakeStripe(clk *fakeClock) *fakeStripe {
@@ -66,6 +70,9 @@ func (f *fakeStripe) advance() {
 		p := f.pis[id]
 		if p.status == "requires_payment_method" && p.onReader && f.tapAt > 0 && !f.clk.t.Before(f.start.Add(f.tapAt)) {
 			p.status, p.tappedAt = "processing", f.start.Add(f.tapAt)
+		}
+		if p.status == "requires_payment_method" && p.onReader && f.declineAt > 0 && !f.clk.t.Before(f.start.Add(f.declineAt)) {
+			p.declined = true // PaymentIntent back to collectable with last_payment_error
 		}
 		if p.status == "processing" && !f.clk.t.Before(p.tappedAt.Add(f.procDur)) {
 			p.status, p.onReader = "succeeded", false
@@ -92,7 +99,15 @@ func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, bool) {
 		return b
 	}
 	piBody := func(id string) []byte {
-		b, _ := json.Marshal(map[string]string{"id": id, "status": f.pis[id].status})
+		m := map[string]any{"id": id, "status": f.pis[id].status}
+		if f.pis[id].declined {
+			code := f.declineCode
+			if code == "" {
+				code = "insufficient_funds"
+			}
+			m["last_payment_error"] = map[string]string{"code": "card_declined", "decline_code": code}
+		}
+		b, _ := json.Marshal(m)
 		return b
 	}
 	switch {
@@ -145,6 +160,17 @@ func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, bool) {
 		}
 		p.status, p.onReader = "canceled", false
 		return piBody(id), true
+	case method == "GET" && strings.HasPrefix(path, "/v1/terminal/readers/"):
+		for _, p := range f.pis {
+			if p.declined && p.onReader {
+				st := "failed"
+				if f.softDecline {
+					st = "in_progress"
+				}
+				return []byte(`{"id":"tmr_1","action":{"status":"` + st + `"}}`), true
+			}
+		}
+		return []byte(`{"id":"tmr_1","action":{"status":"in_progress"}}`), true
 	case method == "GET" && strings.HasPrefix(path, "/v1/payment_intents/"):
 		return piBody(strings.TrimPrefix(path, "/v1/payment_intents/")), true
 	}
@@ -369,5 +395,46 @@ func TestReaderTimeoutErrorAlsoCancelsReaderPrompt(t *testing.T) {
 	out := run(t, newCharger(f, memKV{}, "att:0:ab"), clk)
 	if out.approved || f.cancelAction == 0 || f.piCancels == 0 {
 		t.Fatalf("want decline with reader prompt + PI cancelled: %+v cancel_action=%d pi=%d", out, f.cancelAction, f.piCancels)
+	}
+}
+
+// A card declined on the reader (PaymentIntent back to collectable with
+// last_payment_error) declines at once with Stripe's decline code, not
+// after the 18 s poll as reader_timeout (ut-docs#6440).
+func TestCardDeclinedOnReaderDeclinesAtOnce(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	f := newFakeStripe(clk)
+	f.declineAt = 4 * time.Second
+	f.declineCode = "insufficient_funds"
+	start := clk.t
+	out := run(t, newCharger(f, memKV{}, "att:0:ab"), clk)
+	if out.approved || out.reason != "insufficient_funds" {
+		t.Fatalf("want decline reason insufficient_funds, got %+v", out)
+	}
+	if took := clk.t.Sub(start); took >= 10*time.Second {
+		t.Fatalf("declined after %s; a reader decline must not wait out the 18s poll", took)
+	}
+	if f.piCancels == 0 || f.cancelAction == 0 {
+		t.Fatalf("PaymentIntent/reader not cancelled after the decline (pi=%d action=%d)", f.piCancels, f.cancelAction)
+	}
+}
+
+// A soft decline (chip-and-PIN prompt) leaves the reader action in progress:
+// the plugin must keep polling, not cancel the customer's PIN entry, and a
+// later tap is approved (ut-docs#6440 review).
+func TestSoftDeclineKeepsPollingAndApprovesLaterTap(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	f := newFakeStripe(clk)
+	f.declineAt = 3 * time.Second
+	f.softDecline = true
+	f.tapAt = 10 * time.Second
+	out := run(t, newCharger(f, memKV{}, "att:0:ab"), clk)
+	// declined flag stays set in the fake after the tap; the payment must
+	// still be approved, with no cancel issued before the tap.
+	if !out.approved {
+		t.Fatalf("soft decline then tap not approved: %+v", out)
+	}
+	if f.piCancels != 0 || f.cancelAction != 0 {
+		t.Fatalf("cancelled a payment the reader was still handling (pi=%d action=%d)", f.piCancels, f.cancelAction)
 	}
 }

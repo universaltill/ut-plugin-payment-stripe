@@ -179,11 +179,27 @@ func (c *terminalCharger) run() outcome {
 
 	// 4. Give the customer pollBudget to tap.
 	for c.elapsed() < pollBudget {
-		switch classify(c.status(pi.ID)) {
+		st, declined := c.state(pi.ID)
+		switch classify(st) {
 		case piPaid:
 			return c.paid(pi.ID)
 		case piCancelled:
 			return refused("canceled")
+		}
+		if declined != "" && st == "requires_payment_method" && c.readerActionFailed() {
+			// The card was declined and the reader gave up on this payment
+			// (action.status failed; ut-docs#6440): stop it and cancel, then
+			// report Stripe's reason now instead of waiting out the poll. A
+			// soft decline the reader is still handling (chip-and-PIN
+			// prompt) has an action still in progress and keeps polling. A
+			// tap that slipped in is still approved.
+			switch c.settle(pi.ID, false, true) {
+			case piPaid:
+				return c.paid(pi.ID)
+			case piCancelled:
+				return refused(declined)
+			}
+			return refused("outcome_unknown")
 		}
 		c.clk.sleep(pollInterval)
 	}
@@ -199,17 +215,48 @@ func (c *terminalCharger) run() outcome {
 	return refused("outcome_unknown")
 }
 
+// readerActionFailed reports whether the reader's current action ended
+// failed (GET /v1/terminal/readers/{id}, action.status).
+func (c *terminalCharger) readerActionFailed() bool {
+	body, ok := c.api.call("GET", "/v1/terminal/readers/"+c.readerID, "", "")
+	if !ok {
+		return false
+	}
+	var r struct {
+		Action *struct {
+			Status string `json:"status"`
+		} `json:"action"`
+	}
+	_ = json.Unmarshal(body, &r)
+	return r.Action != nil && r.Action.Status == "failed"
+}
+
 // status reads a PaymentIntent's status; "" when the request failed.
 func (c *terminalCharger) status(pi string) string {
+	st, _ := c.state(pi)
+	return st
+}
+
+// state reads a PaymentIntent's status plus, when the last attempt on the
+// reader was declined, Stripe's reason (decline_code, else code) from
+// last_payment_error; "" when none or the request failed.
+func (c *terminalCharger) state(pi string) (status, declined string) {
 	body, ok := c.api.call("GET", "/v1/payment_intents/"+pi, "", "")
 	if !ok {
-		return ""
+		return "", ""
 	}
 	var p struct {
 		Status string `json:"status"`
+		Last   *struct {
+			Code        string `json:"code"`
+			DeclineCode string `json:"decline_code"`
+		} `json:"last_payment_error"`
 	}
 	_ = json.Unmarshal(body, &p)
-	return p.Status
+	if p.Last != nil {
+		declined = firstNonEmpty(p.Last.DeclineCode, p.Last.Code, "card_declined")
+	}
+	return p.Status, declined
 }
 
 // classify maps a PaymentIntent status to this flow's outcomes.
