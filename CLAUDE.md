@@ -22,3 +22,13 @@ id, which the till re-sends on a re-tap of Pay for the same basket
 since Stripe replays a stored error for 24 h). A definite reader refusal cancels
 only the PaymentIntent, never `cancel_action`. Never move the poll past the host
 gate or drop a payment that succeeded late.
+
+**Refund links (ut-docs#6438, v1.4.0):** never one storage key per sale or
+event (host cap 1,024 keys, no guest delete). `src/links.go` keeps sale ->
+PaymentIntent in 256 fixed `blob:own` buckets (32 KiB each, FIFO);
+`src/recent.go` keeps the last 8 approvals in `last_txn` (`recent`) and links a
+sale only on a unique match (amount/window) or exactly by `authorize_request_id`,
+never by the bare last approval. Core's `transaction_ref` / `original_payments`
+are used first and need no plugin storage. Refund order and the decline
+`unknown_original_payment` live in `src/refund.go`. All of it is untagged and
+tested against fakes that enforce the real host caps (`refundlink_test.go`).
