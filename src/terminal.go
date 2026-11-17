@@ -47,11 +47,6 @@ type clock interface {
 	sleep(time.Duration)
 }
 
-type kvStore interface {
-	get(k string) string
-	put(k string, v []byte)
-}
-
 // outcome is the flow's verdict; main.go turns it into approve()/decline().
 type outcome struct {
 	approved bool

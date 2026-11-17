@@ -56,5 +56,7 @@ func putAttempt(kv kvStore, e attemptEntry) {
 		list = list[len(list)-maxAttempts:]
 	}
 	b, _ := json.Marshal(list)
-	kv.put(attemptsKey, b)
+	if err := kv.put(attemptsKey, b); err != nil {
+		logf("stripe: could not save the attempt record (%v); a retry of this sale may start a new charge", err)
+	}
 }

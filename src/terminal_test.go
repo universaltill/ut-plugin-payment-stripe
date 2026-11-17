@@ -20,8 +20,11 @@ func (c *fakeClock) sleep(d time.Duration) { c.t = c.t.Add(d) }
 
 type memKV map[string]string
 
-func (m memKV) get(k string) string    { return m[k] }
-func (m memKV) put(k string, v []byte) { m[k] = string(v) }
+func (m memKV) get(k string) string { return m[k] }
+func (m memKV) put(k string, v []byte) error {
+	m[k] = string(v)
+	return nil
+}
 
 // fakeStripe simulates one Stripe account with one Terminal reader. The
 // customer taps at tapAt (relative to the flow's start); the payment is
