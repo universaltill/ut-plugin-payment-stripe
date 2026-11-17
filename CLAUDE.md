@@ -34,3 +34,5 @@ never by the bare last approval. Core's `transaction_ref` / `original_payments`
 are used first and need no plugin storage. Refund order and the decline
 `unknown_original_payment` live in `src/refund.go`. All of it is untagged and
 tested against fakes that enforce the real host caps (`refundlink_test.go`).
+
+**Wire-level contract suite (ut-docs#6565, v1.5.1):** `src/contract_test.go` runs the Terminal flow and refund over real HTTP, form-encoded (paths, bodies, idempotency; not headers/auth), against a fake server that follows Stripe's DOCUMENTED behaviour (create body, Idempotency-Key replay incl. stored errors, test-helper only for `sk_test_`, reader decline, cancel of reader action + PaymentIntent, refund). It is NOT a recording of Stripe: the simulated-reader run against real Stripe test mode waits for Key Vault `stripe-test-terminal-key` (not present on 2026-11-17).
