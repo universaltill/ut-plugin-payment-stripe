@@ -53,8 +53,14 @@ func updateLastTxn(kv kvStore, top map[string]any, edit func([]recentEntry) []re
 			top = map[string]any{}
 		}
 	}
-	top["recent"] = edit(cur.Recent)
-	b, _ := json.Marshal(top)
+	// Copy: the caller prints top as the stdout answer, which must never
+	// carry the recent list (full payment references, ut-docs#6606).
+	saved := make(map[string]any, len(top)+1)
+	for k, v := range top {
+		saved[k] = v
+	}
+	saved["recent"] = edit(cur.Recent)
+	b, _ := json.Marshal(saved)
 	return kv.put(lastTxnKey, b)
 }
 

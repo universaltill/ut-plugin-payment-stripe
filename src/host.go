@@ -108,6 +108,7 @@ type eventPayload struct {
 	AuthorizeRequestID string        `json:"authorize_request_id"`
 	TransactionRef     string        `json:"transaction_ref"`
 	OriginalPayments   []origPayment `json:"original_payments"`
+	EventID            string        `json:"-"` // the event's own id, set by parseEvent
 }
 
 type event struct {
@@ -120,6 +121,7 @@ func parseEvent(raw []byte) event {
 	var ev event
 	_ = json.Unmarshal(raw, &ev)
 	ev.Payload.TransactionRef = strings.TrimSpace(ev.Payload.TransactionRef)
+	ev.Payload.EventID = ev.ID
 	return ev
 }
 
