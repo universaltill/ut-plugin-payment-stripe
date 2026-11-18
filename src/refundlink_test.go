@@ -98,16 +98,20 @@ type refundAPI struct {
 	calls   []string
 	idems   []string
 	answers map[string]string
+	status  int // HTTP status of a scripted answer (0 = 200)
 }
 
-func (r *refundAPI) call(method, path, form, idemKey string) ([]byte, bool) {
+func (r *refundAPI) call(method, path, form, idemKey string) ([]byte, int, bool) {
+	if r.status == 0 {
+		r.status = 200
+	}
 	r.calls = append(r.calls, form)
 	r.idems = append(r.idems, idemKey)
 	pi := strings.SplitN(strings.TrimPrefix(form, "payment_intent="), "&", 2)[0]
 	if a, ok := r.answers[pi]; ok {
-		return []byte(a), true
+		return []byte(a), r.status, true
 	}
-	return []byte(`{"id":"re_` + pi + `","status":"succeeded"}`), true
+	return []byte(`{"id":"re_` + pi + `","status":"succeeded"}`), 200, true
 }
 
 func (r *refundAPI) refundedPIs() []string {
@@ -511,5 +515,14 @@ func TestP13_NoFullReferenceInLogs(t *testing.T) {
 	}
 	if len(w.logs) == 0 {
 		t.Fatal("expected the refund and unlinked-sale log lines")
+	}
+}
+
+// A 401 on the refund call is a wrong or revoked key, not a generic failure.
+func TestRefundInvalidKeyIsDistinctReason(t *testing.T) {
+	api := &refundAPI{answers: map[string]string{"pi_1": invalidKeyBody}, status: 401}
+	_, _, _, reason := refundOne(api, "pi_1", 500, "sale1")
+	if reason != "invalid_secret_key" {
+		t.Fatalf("reason = %q, want invalid_secret_key", reason)
 	}
 }

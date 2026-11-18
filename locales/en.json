@@ -1,0 +1,8 @@
+{
+  "payment_stripe.secret_key.label": "Secret key",
+  "payment_stripe.secret_key.help": "Your Stripe secret key. sk_test_ is test mode, sk_live_ charges real cards. Kept hidden.",
+  "payment_stripe.currency.label": "Currency",
+  "payment_stripe.currency.help": "Three-letter code Stripe charges in, for example gbp or eur. Use your shop's currency.",
+  "payment_stripe.reader_id.label": "Card reader ID",
+  "payment_stripe.reader_id.help": "The Stripe reader for this till. Leave empty for a test charge, which works only with an sk_test_ key."
+}

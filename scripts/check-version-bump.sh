@@ -53,6 +53,7 @@ SHIPPED_PATTERNS=(
     'README.md'
     'LICENSE'
     'src/*'
+    'locales/*'
     'go.mod'
     'go.sum'
     'scripts/build.sh'

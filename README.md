@@ -6,12 +6,19 @@ finishes if Stripe approves (a decline leaves the basket intact).
 
 ## Configure (plugin settings)
 
-- `stripe_secret_key` — your Stripe secret key (`sk_test_…` for testing,
+- **Secret key** (`stripe_secret_key`) — your Stripe secret key (`sk_test_…` for testing,
   `sk_live_…` in production). One plugin, per-merchant key — nothing hardcoded.
-- `currency` — ISO code (default `gbp`; e.g. `aed`, `try`, `usd`).
-- `stripe_reader_id` — the Stripe Terminal reader this till drives (server-driven
+- **Currency** (`currency`) — ISO code (default `gbp`; e.g. `aed`, `try`, `usd`).
+- **Card reader ID** (`stripe_reader_id`) — the Stripe Terminal reader this till drives (server-driven
   readers: BBPOS WisePOS E, Stripe Reader S700). Set per till. Without it the
   plugin makes an online charge instead (test keys only make sense there).
+
+Each field shows its name and a help line on the settings page (the setting key
+shows on hover). A wrong, revoked or expired secret key declines every payment
+with the reason `invalid_secret_key` (HTTP 401 from Stripe); the reason appears in
+the till log, not on the cashier's screen. The labels are English only for now
+(`locales/en.json`, shipped in the package); other languages come later through
+Weblate (ADR-0160 §2).
 
 Grant it `net:api.stripe.com` (declared in the manifest).
 

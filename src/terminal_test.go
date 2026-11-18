@@ -50,8 +50,13 @@ type fakeStripe struct {
 	createErrs       int           // the next N creates answer an api_error
 	declineAt        time.Duration // 0 = never; the card is declined on the reader at this time
 	declineCode      string        // last_payment_error.decline_code, default insufficient_funds
+	badKey           bool          // Stripe answers 401 to every call (wrong or revoked secret key)
 	softDecline      bool          // the reader keeps the action in progress (chip-and-PIN prompt) after the decline
 }
+
+// invalidKeyBody is the documented shape of Stripe's 401 answer. The message
+// echoes a masked key, which is why the plugin must never log it.
+const invalidKeyBody = `{"error":{"type":"invalid_request_error","message":"Invalid API Key provided: sk_test_****abcd"}}`
 
 type fakePI struct {
 	status   string // requires_payment_method, processing, succeeded, canceled
@@ -91,9 +96,12 @@ func (f *fakeStripe) charged() int {
 	return n
 }
 
-func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, bool) {
+func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, int, bool) {
 	f.clk.sleep(f.latency)
 	f.advance()
+	if f.badKey {
+		return []byte(invalidKeyBody), 401, true
+	}
 	errBody := func(code string) []byte {
 		b, _ := json.Marshal(map[string]any{"error": map[string]string{"code": code}})
 		return b
@@ -118,48 +126,48 @@ func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, bool) {
 		if f.createErrs > 0 {
 			f.createErrs--
 			b, _ := json.Marshal(map[string]any{"error": map[string]string{"type": "api_error", "message": "boom"}})
-			return b, true
+			return b, 200, true
 		}
 		f.creates++
 		id := "pi_" + string(rune('a'+len(f.order)))
 		f.pis[id] = &fakePI{status: "requires_payment_method"}
 		f.order = append(f.order, id)
-		return piBody(id), true
+		return piBody(id), 200, true
 	case method == "POST" && strings.HasSuffix(path, "/process_payment_intent"):
 		if f.processFails {
 			if f.processErrCode != "" {
-				return errBody(f.processErrCode), true
+				return errBody(f.processErrCode), 200, true
 			}
-			return errBody("terminal_reader_offline"), true
+			return errBody("terminal_reader_offline"), 200, true
 		}
 		if f.processErrNoCode {
-			return []byte(`{"error":{"type":"invalid_request_error","message":"reader busy"}}`), true
+			return []byte(`{"error":{"type":"invalid_request_error","message":"reader busy"}}`), 200, true
 		}
 		id := strings.TrimPrefix(form, "payment_intent=")
 		f.pis[id].onReader = true
-		return []byte(`{"id":"tmr_1"}`), true
+		return []byte(`{"id":"tmr_1"}`), 200, true
 	case method == "POST" && strings.Contains(path, "/test_helpers/"):
-		return []byte(`{}`), true
+		return []byte(`{}`), 200, true
 	case method == "POST" && strings.HasSuffix(path, "/cancel_action"):
 		f.cancelAction++
 		for _, p := range f.pis {
 			if p.status == "processing" {
-				return errBody("terminal_reader_busy"), true
+				return errBody("terminal_reader_busy"), 200, true
 			}
 		}
 		for _, p := range f.pis {
 			p.onReader = false
 		}
-		return []byte(`{"id":"tmr_1","action":null}`), true
+		return []byte(`{"id":"tmr_1","action":null}`), 200, true
 	case method == "POST" && strings.HasSuffix(path, "/cancel"):
 		f.piCancels++
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/payment_intents/"), "/cancel")
 		p := f.pis[id]
 		if p.status == "processing" || p.status == "succeeded" {
-			return errBody("payment_intent_unexpected_state"), true
+			return errBody("payment_intent_unexpected_state"), 200, true
 		}
 		p.status, p.onReader = "canceled", false
-		return piBody(id), true
+		return piBody(id), 200, true
 	case method == "GET" && strings.HasPrefix(path, "/v1/terminal/readers/"):
 		for _, p := range f.pis {
 			if p.declined && p.onReader {
@@ -167,14 +175,14 @@ func (f *fakeStripe) call(method, path, form, idemKey string) ([]byte, bool) {
 				if f.softDecline {
 					st = "in_progress"
 				}
-				return []byte(`{"id":"tmr_1","action":{"status":"` + st + `"}}`), true
+				return []byte(`{"id":"tmr_1","action":{"status":"` + st + `"}}`), 200, true
 			}
 		}
-		return []byte(`{"id":"tmr_1","action":{"status":"in_progress"}}`), true
+		return []byte(`{"id":"tmr_1","action":{"status":"in_progress"}}`), 200, true
 	case method == "GET" && strings.HasPrefix(path, "/v1/payment_intents/"):
-		return piBody(strings.TrimPrefix(path, "/v1/payment_intents/")), true
+		return piBody(strings.TrimPrefix(path, "/v1/payment_intents/")), 200, true
 	}
-	return errBody("unexpected_call"), true
+	return errBody("unexpected_call"), 200, true
 }
 
 func newCharger(f *fakeStripe, kv memKV, requestID string) *terminalCharger {
@@ -436,5 +444,21 @@ func TestSoftDeclineKeepsPollingAndApprovesLaterTap(t *testing.T) {
 	}
 	if f.piCancels != 0 || f.cancelAction != 0 {
 		t.Fatalf("cancelled a payment the reader was still handling (pi=%d action=%d)", f.piCancels, f.cancelAction)
+	}
+}
+
+// A wrong or revoked secret key answers 401: the reason must say so (not
+// create_failed), nothing may be charged, and no reader call is made.
+func TestInvalidKeyIsDistinctReason(t *testing.T) {
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	f := &fakeStripe{clk: clk, start: clk.t, pis: map[string]*fakePI{}, badKey: true}
+	c := &terminalCharger{api: f, clk: clk, kv: memKV{}, sk: "sk_test_x", currency: "gbp",
+		readerID: "tmr_1", requestID: "req1", amount: 1250, start: clk.t}
+	out := c.run()
+	if out.approved || out.reason != "invalid_secret_key" {
+		t.Fatalf("want declined invalid_secret_key, got %+v", out)
+	}
+	if f.charged() != 0 || f.creates != 0 {
+		t.Fatalf("charged=%d creates=%d, want 0", f.charged(), f.creates)
 	}
 }
