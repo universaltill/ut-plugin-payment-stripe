@@ -212,3 +212,15 @@ func TestLegsLogsMasked(t *testing.T) {
 		t.Errorf("failed leg not named masked: %q", *logs)
 	}
 }
+
+// Reviewer (ut-docs#6603): the existing "overflow" case is also caught by
+// sum != amount; this one wraps to exactly p.Amount, so only the overflow
+// guard can decline it.
+func TestLegsSumOverflowGuard(t *testing.T) {
+	big := int64(1) << 62
+	p := legPay(-big, "e", leg("pi_A", big, i64(big)), leg("pi_B", big, i64(big)), leg("pi_C", big, i64(big)))
+	api := newLedger(map[string]int64{})
+	if _, d := refundSale(api, memKV{}, noLinks(), p); d != declineInvalidRefundAmount || len(api.idemKeys) != 0 {
+		t.Fatalf("got %q calls %d", d, len(api.idemKeys))
+	}
+}

@@ -82,7 +82,9 @@ what it took (amount plus tip). Otherwise it declines before calling Stripe:
 reference) or `too_many_original_payments` (more than 16 legs). If a later leg
 fails after an earlier one was refunded, it declines `refund_partial`: tap
 Refund again on the same screen to finish, and do not refund the rest another
-way. The till shows its generic "declined" text until it reads this code for
+way. A retry only helps when the failed leg hit a network or temporary error:
+Stripe replays a definite refusal (for example `amount_too_large`) under the
+same key, so then finish that leg in the Stripe Dashboard. The till shows its generic "declined" text until it reads this code for
 refunds. Each leg uses `Idempotency-Key: ut-refund-<event>-<PaymentIntent>-<amount>`,
 so a retry replays the legs already refunded instead of refunding them again.
 **Limit:** Stripe keeps idempotency keys for at least 24 hours; retrying the
