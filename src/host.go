@@ -97,6 +97,9 @@ type origPayment struct {
 	TransactionRef string `json:"transaction_ref"`
 	Amount         int64  `json:"amount"`
 	TipAmount      int64  `json:"tip_amount"`
+	// RefundAmount is what core allocated to this leg (only sent with 2 or
+	// more legs of the method); nil = absent, so 0 is distinguishable.
+	RefundAmount *int64 `json:"refund_amount,omitempty"`
 }
 
 type eventPayload struct {
