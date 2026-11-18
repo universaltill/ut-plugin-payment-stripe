@@ -37,6 +37,9 @@ func logWrite(ptr, n uint32)
 //go:wasmimport ut settings_get
 func settingsGet(kPtr, kLen, dstPtr, dstCap uint32) int32
 
+//go:wasmimport ut view_query
+func viewQuery(nPtr, nLen, aPtr, aLen, dstPtr, dstCap uint32) int32
+
 //go:wasmimport ut http_request
 func httpRequest(rPtr, rLen, dstPtr, dstCap uint32) int32
 
@@ -96,6 +99,27 @@ func setting(key string) string {
 		}
 	}
 	return string(buf[:n])
+}
+
+// shopContext reads the shop's currency from the core view shop.context.v2
+// (view:shop). Known is false when the view is unavailable: resolveCurrency
+// then relies on the sale's currency or declines, never guesses.
+func shopContext() shopInfo {
+	np, nl := ptrOf([]byte("shop.context.v2"))
+	ap, al := ptrOf([]byte("{}"))
+	buf := make([]byte, 8192)
+	bp, bc := ptrOf(buf)
+	n := viewQuery(np, nl, ap, al, bp, bc)
+	if n >= 0 && int(n) > len(buf) {
+		buf = make([]byte, n)
+		bp, bc = ptrOf(buf)
+		n = viewQuery(np, nl, ap, al, bp, bc)
+	}
+	if n < 0 || int(n) > len(buf) {
+		return shopInfo{}
+	}
+	code, dec, ok := parseShopContext(buf[:n])
+	return shopInfo{Code: code, Decimals: dec, Known: ok}
 }
 
 // hostStorage is the raw plugin storage; put reports the host's code.
@@ -245,14 +269,11 @@ func approve(amount int64, currency, authCode string) {
 }
 
 func decline(amount int64, currency, reason string) {
-	fields := map[string]any{
-		"provider": "stripe", "amount": amount, "currency": currency,
-		"outcome": "declined", "decline_code": reason,
-	}
+	fields := declineFields(amount, currency, reason)
 	if persistResult {
 		saveAuthorizeResult(pluginKV, fields, nil)
 	}
-	result, _ := json.Marshal(fields)
+	result := declineAnswer(amount, currency, reason)
 	logf("stripe: DECLINED %d %s (%s)", amount, currency, scrubRefs(reason))
 	_, _ = os.Stdout.Write(append(result, '\n'))
 	os.Exit(declined)
@@ -290,15 +311,21 @@ func main() {
 	if sk == "" {
 		decline(amount, "", "no_secret_key")
 	}
-	currency := strings.TrimSpace(setting("currency"))
-	if currency == "" {
-		currency = "gbp"
-	}
 
 	// Provider refund (blocking, pre-return): send the money back on the
-	// original charge. Exit 0 only when Stripe accepts the refund.
+	// original charge. Exit 0 only when Stripe accepts the refund. Refunds
+	// carry no currency of their own, so no currency check here.
 	if strings.HasSuffix(ev.Type, ".refund") {
 		refundCharge(sk, ev.Payload)
+	}
+
+	// Currency (ut-docs#6604): saved choice ("auto" = the sale's, else the
+	// shop's), declined when it does not match the sale.
+	savedCurrency := setting("currency")
+	shop := shopContext()
+	currency, currencyDecline := resolveCurrency(savedCurrency, ev.Payload.Currency, shop)
+	if currencyDecline != "" {
+		decline(amount, declinedCurrency(savedCurrency, ev.Payload.Currency, shop), currencyDecline)
 	}
 
 	if readerID := strings.TrimSpace(setting("stripe_reader_id")); readerID != "" {

@@ -20,8 +20,15 @@ func stripeTooLarge(code string) bool {
 // refundOne asks Stripe to refund amount on one PaymentIntent. done=true on
 // success (refID set). tooLarge=true when Stripe definitively says this
 // charge cannot take it. Otherwise reason is the decline code.
-func refundOne(api stripeAPI, pi string, amount int64, saleID string) (refID string, done, tooLarge bool, reason string) {
-	body, status, ok := api.call("POST", "/v1/refunds", fmt.Sprintf("payment_intent=%s&amount=%d", url.QueryEscape(pi), amount), "")
+func refundOne(api stripeAPI, pi string, amount int64, eventID string) (refID string, done, tooLarge bool, reason string) {
+	// The till re-sends the same event id when the cashier retries a refund
+	// whose reply was lost; Stripe then replays the first answer (the
+	// refund) instead of refunding again (ut-docs#6598).
+	idem := ""
+	if eventID != "" {
+		idem = "ut-refund-" + eventID + "-" + pi
+	}
+	body, status, ok := api.call("POST", "/v1/refunds", fmt.Sprintf("payment_intent=%s&amount=%d", url.QueryEscape(pi), amount), idem)
 	if !ok {
 		return "", false, false, "network_error"
 	}
@@ -54,7 +61,7 @@ func refundSale(api stripeAPI, kv kvStore, links linkStore, p eventPayload) (ref
 	}
 	last := "refund_failed"
 	for _, pi := range refs {
-		id, done, tooLarge, reason := refundOne(api, pi, p.Amount, p.OriginalSaleID)
+		id, done, tooLarge, reason := refundOne(api, pi, p.Amount, p.EventID)
 		if done {
 			logf("stripe: REFUNDED %d on %s (%s)", p.Amount, maskRef(pi), maskRef(id))
 			return id, ""

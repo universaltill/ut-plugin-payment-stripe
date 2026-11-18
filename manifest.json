@@ -1,8 +1,8 @@
 {
   "id": "com.universaltill.payment-stripe",
   "name": "Stripe Card Payments",
-  "version": "1.6.0",
-  "description": "Take card payments through Stripe. Authorization runs BEFORE the sale completes: the till asks Stripe to charge the amount and only finishes the sale if Stripe approves. Set your Stripe SECRET key (sk_...) in the settings. For card-present payments, also set a Stripe Terminal reader id (stripe_reader_id) \u2014 the till drives the reader (Reader S700 / WisePOS E, or a test simulated reader). With no reader id it runs an online/demo charge; in test mode amounts ending .13 decline. Card refunds are wired too: refunding a Stripe sale on the till refunds the original charge automatically.",
+  "version": "1.7.0",
+  "description": "Take card payments through Stripe. Authorization runs BEFORE the sale completes: the till asks Stripe to charge the amount and only finishes the sale if Stripe approves. Set your Stripe SECRET key (sk_...) in the settings. For card-present payments, also set a Stripe Terminal reader id (stripe_reader_id) — the till drives the reader (Reader S700 / WisePOS E, or a test simulated reader). With no reader id it runs an online/demo charge; in test mode amounts ending .13 decline. Card refunds are wired too: refunding a Stripe sale on the till refunds the original charge automatically.",
   "author": "Universal Till",
   "website": "https://universaltill.com",
   "canonical_type": "payment",
@@ -12,6 +12,7 @@
   "permissions": [
     "pos.tender",
     "events:receive",
+    "view:shop",
     "net:api.stripe.com",
     "storage",
     "blob:own"
@@ -39,10 +40,85 @@
     },
     {
       "key": "currency",
-      "default_value": "gbp",
+      "default_value": "auto",
       "scope": "global",
       "label": "payment_stripe.currency.label",
-      "help": "payment_stripe.currency.help"
+      "help": "payment_stripe.currency.help",
+      "type": "choice",
+      "options": [
+        {
+          "value": "auto",
+          "label": "payment_stripe.currency.opt.auto"
+        },
+        {
+          "value": "aed",
+          "label": "payment_stripe.currency.opt.aed"
+        },
+        {
+          "value": "aud",
+          "label": "payment_stripe.currency.opt.aud"
+        },
+        {
+          "value": "brl",
+          "label": "payment_stripe.currency.opt.brl"
+        },
+        {
+          "value": "cad",
+          "label": "payment_stripe.currency.opt.cad"
+        },
+        {
+          "value": "chf",
+          "label": "payment_stripe.currency.opt.chf"
+        },
+        {
+          "value": "czk",
+          "label": "payment_stripe.currency.opt.czk"
+        },
+        {
+          "value": "dkk",
+          "label": "payment_stripe.currency.opt.dkk"
+        },
+        {
+          "value": "eur",
+          "label": "payment_stripe.currency.opt.eur"
+        },
+        {
+          "value": "gbp",
+          "label": "payment_stripe.currency.opt.gbp"
+        },
+        {
+          "value": "mxn",
+          "label": "payment_stripe.currency.opt.mxn"
+        },
+        {
+          "value": "myr",
+          "label": "payment_stripe.currency.opt.myr"
+        },
+        {
+          "value": "nok",
+          "label": "payment_stripe.currency.opt.nok"
+        },
+        {
+          "value": "pln",
+          "label": "payment_stripe.currency.opt.pln"
+        },
+        {
+          "value": "ron",
+          "label": "payment_stripe.currency.opt.ron"
+        },
+        {
+          "value": "sek",
+          "label": "payment_stripe.currency.opt.sek"
+        },
+        {
+          "value": "try",
+          "label": "payment_stripe.currency.opt.try"
+        },
+        {
+          "value": "usd",
+          "label": "payment_stripe.currency.opt.usd"
+        }
+      ]
     },
     {
       "key": "stripe_reader_id",
@@ -66,5 +142,8 @@
       "event": "payment.stripe.refund",
       "action": "stripe.refund"
     }
+  ],
+  "views_used": [
+    "shop.context.v2"
   ]
 }
