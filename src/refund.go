@@ -21,9 +21,12 @@ func stripeTooLarge(code string) bool {
 // success (refID set). tooLarge=true when Stripe definitively says this
 // charge cannot take it. Otherwise reason is the decline code.
 func refundOne(api stripeAPI, pi string, amount int64, saleID string) (refID string, done, tooLarge bool, reason string) {
-	body, ok := api.call("POST", "/v1/refunds", fmt.Sprintf("payment_intent=%s&amount=%d", url.QueryEscape(pi), amount), "")
+	body, status, ok := api.call("POST", "/v1/refunds", fmt.Sprintf("payment_intent=%s&amount=%d", url.QueryEscape(pi), amount), "")
 	if !ok {
 		return "", false, false, "network_error"
+	}
+	if status == 401 {
+		return "", false, false, declineInvalidKey
 	}
 	var rf struct {
 		ID     string `json:"id"`

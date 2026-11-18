@@ -30,6 +30,7 @@ type stripeWire struct {
 	tapAt       time.Duration // 0 = never
 	declineAt   time.Duration // reader declines the card at this time
 	createError bool          // creates answer an api_error (replayed per idempotency key)
+	badKey      bool          // every path answers Stripe's documented 401 for a wrong or revoked key
 
 	pis      map[string]*wirePI
 	idem     map[string]string // idempotency key -> stored response body
@@ -82,6 +83,12 @@ func (s *stripeWire) handler(w http.ResponseWriter, r *http.Request) {
 		s.fail("Stripe takes form-encoded POST bodies, not " + r.Header.Get("Content-Type"))
 	}
 	s.advance()
+	if s.badKey {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(401)
+		_, _ = w.Write([]byte(invalidKeyBody))
+		return
+	}
 	reply := func(code int, v any) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
@@ -190,14 +197,14 @@ func (s *stripeWire) handler(w http.ResponseWriter, r *http.Request) {
 
 type httpStripe struct{ base string }
 
-func (h httpStripe) call(method, path, form, idemKey string) ([]byte, bool) {
+func (h httpStripe) call(method, path, form, idemKey string) ([]byte, int, bool) {
 	var rd io.Reader
 	if method == "POST" {
 		rd = bytes.NewReader([]byte(form))
 	}
 	req, err := http.NewRequest(method, h.base+path, rd)
 	if err != nil {
-		return nil, false
+		return nil, 0, false
 	}
 	if method == "POST" {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -207,11 +214,11 @@ func (h httpStripe) call(method, path, form, idemKey string) ([]byte, bool) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, false
+		return nil, 0, false
 	}
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(resp.Body)
-	return out, true
+	return out, resp.StatusCode, true
 }
 
 func wireWorld(t *testing.T, sk string) (*stripeWire, *fakeClock, memKV, func(req string) *terminalCharger) {
@@ -365,5 +372,21 @@ func TestWireRefundBodyAndOutcomes(t *testing.T) {
 	s.pis["pi_x"] = &wirePI{status: "canceled"}
 	if _, done, _, reason := refundOne(c.api, "pi_x", 100, "sale2"); done || reason != "charge_not_refundable" {
 		t.Fatalf("refund of an uncharged PI: done=%v reason=%q", done, reason)
+	}
+}
+
+// A wrong key must read as invalid_secret_key over real HTTP: the status comes
+// from the response line, the body has no error code (ut-docs#6570).
+func TestWireInvalidKeyIsDistinctReason(t *testing.T) {
+	s, _, _, mk := wireWorld(t, "sk_test_x")
+	s.badKey = true
+	out := mk("req1").run()
+	if out.approved || out.reason != "invalid_secret_key" {
+		t.Fatalf("want declined invalid_secret_key, got %+v", out)
+	}
+	for _, r := range s.reqs {
+		if strings.Contains(r.path, "process_payment_intent") {
+			t.Fatalf("reader must not be called after a 401: %+v", r)
+		}
 	}
 }

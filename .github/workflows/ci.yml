@@ -32,6 +32,8 @@ jobs:
         run: scripts/build.sh
       - name: Validate manifest + plugin manifest
         run: scripts/validate.sh
+      - name: Guard plugin i18n (locale key drift)
+        run: scripts/guard-plugin-i18n.sh
       - name: Package (dry run)
         run: scripts/package.sh
   version-bump:

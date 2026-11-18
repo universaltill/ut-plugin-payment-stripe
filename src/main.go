@@ -185,12 +185,12 @@ var (
 // stripeCall performs one Stripe API request and returns the decoded response
 // body. ok is false only on a host/transport failure (not an HTTP 4xx, which
 // still returns a body describing the error).
-func stripeCall(method, path, sk, form string) (body []byte, ok bool) {
+func stripeCall(method, path, sk, form string) (body []byte, status int, ok bool) {
 	return stripeCallIdem(method, path, sk, form, "")
 }
 
 // stripeCallIdem is stripeCall with an optional Idempotency-Key header.
-func stripeCallIdem(method, path, sk, form, idemKey string) (body []byte, ok bool) {
+func stripeCallIdem(method, path, sk, form, idemKey string) (body []byte, status int, ok bool) {
 	headers := map[string]string{
 		"Authorization": "Bearer " + sk,
 		"Content-Type":  "application/x-www-form-urlencoded",
@@ -209,14 +209,15 @@ func stripeCallIdem(method, path, sk, form, idemKey string) (body []byte, ok boo
 	bp, bc := ptrOf(respBuf)
 	code := httpRequest(rp, rl, bp, bc)
 	if code < 0 || int(code) > len(respBuf) {
-		return nil, false
+		return nil, 0, false
 	}
 	var httpResp struct {
+		Status  int    `json:"status"`
 		BodyB64 string `json:"body_b64"`
 	}
 	_ = json.Unmarshal(respBuf[:code], &httpResp)
 	b, _ := base64.StdEncoding.DecodeString(httpResp.BodyB64)
-	return b, true
+	return b, httpResp.Status, true
 }
 
 const (
@@ -260,7 +261,7 @@ func decline(amount int64, currency, reason string) {
 // hostStripe and realClock wire terminal.go's flow to the host.
 type hostStripe struct{ sk string }
 
-func (h hostStripe) call(method, path, form, idemKey string) ([]byte, bool) {
+func (h hostStripe) call(method, path, form, idemKey string) ([]byte, int, bool) {
 	return stripeCallIdem(method, path, h.sk, form, idemKey)
 }
 
@@ -338,22 +339,10 @@ func onlineCharge(sk, currency string, amount int64) {
 	form := fmt.Sprintf(
 		"amount=%d&currency=%s&payment_method=%s&confirm=true&automatic_payment_methods[enabled]=true&automatic_payment_methods[allow_redirects]=never",
 		amount, currency, paymentMethod)
-	body, ok := stripeCall("POST", "/v1/payment_intents", sk, form)
-	if !ok {
-		decline(amount, currency, "network_error")
+	body, status, ok := stripeCall("POST", "/v1/payment_intents", sk, form)
+	if id, reason := onlineDecision(status, ok, body); reason == "" {
+		approve(amount, currency, id)
+	} else {
+		decline(amount, currency, reason)
 	}
-	var pi struct {
-		Status string `json:"status"`
-		ID     string `json:"id"`
-		Error  struct {
-			Code        string `json:"code"`
-			DeclineCode string `json:"decline_code"`
-			Message     string `json:"message"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(body, &pi)
-	if pi.Status == "succeeded" {
-		approve(amount, currency, pi.ID)
-	}
-	decline(amount, currency, firstNonEmpty(pi.Error.DeclineCode, pi.Error.Code, "declined"))
 }

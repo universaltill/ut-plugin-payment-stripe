@@ -16,6 +16,9 @@ mkdir -p dist
 
 entries=(manifest.json README.md bin)
 [ -f LICENSE ] && entries+=(LICENSE)
+# locales/ carries the settings labels/help (and any entry-label keys): without it
+# in the bundle the till renders raw keys (the ut-plugin-tax-de 0.5.4 incident).
+[ -d locales ] && entries+=(locales)
 # COPYFILE_DISABLE stops macOS tar shipping AppleDouble ._* junk (the
 # marketplace bundle-hygiene gate rejects it).
 COPYFILE_DISABLE=1 tar -czf "$OUT" "${entries[@]}"

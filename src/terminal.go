@@ -36,11 +36,16 @@ const (
 )
 
 // stripeAPI performs one Stripe request. ok is false only on a transport
-// failure; an API error still returns its body. idemKey, when not empty,
-// is sent as the Idempotency-Key header.
+// failure; an API error still returns its body and its HTTP status (0 when
+// unknown). idemKey, when not empty, is sent as the Idempotency-Key header.
 type stripeAPI interface {
-	call(method, path, form, idemKey string) (body []byte, ok bool)
+	call(method, path, form, idemKey string) (body []byte, status int, ok bool)
 }
+
+// declineInvalidKey is the reason for HTTP 401: Stripe refused the secret key
+// (wrong, revoked or expired). Only the status tells it apart reliably, and
+// Stripe's message echoes a masked key, so it is never logged (ut-docs#6570).
+const declineInvalidKey = "invalid_secret_key"
 
 type clock interface {
 	now() time.Time
@@ -123,11 +128,14 @@ func (c *terminalCharger) run() outcome {
 	if c.requestID != "" {
 		form += "&metadata[ut_request_id]=" + url.QueryEscape(c.requestID)
 	}
-	body, ok := c.api.call("POST", "/v1/payment_intents", form, idem)
+	body, status, ok := c.api.call("POST", "/v1/payment_intents", form, idem)
 	if !ok {
 		// Keep the key: Stripe returns the same PaymentIntent if this
 		// request did create one.
 		return refused("network_error")
+	}
+	if status == 401 {
+		return refused(declineInvalidKey)
 	}
 	var pi struct {
 		ID    string      `json:"id"`
@@ -146,7 +154,7 @@ func (c *terminalCharger) run() outcome {
 	putAttempt(c.kv, rec)
 
 	// 2. Tell the reader to collect + process the payment.
-	body, ok = c.api.call("POST", "/v1/terminal/readers/"+c.readerID+"/process_payment_intent", "payment_intent="+pi.ID, "")
+	body, _, ok = c.api.call("POST", "/v1/terminal/readers/"+c.readerID+"/process_payment_intent", "payment_intent="+pi.ID, "")
 	var rd struct {
 		Error stripeError `json:"error"`
 	}
@@ -218,7 +226,7 @@ func (c *terminalCharger) run() outcome {
 // readerActionFailed reports whether the reader's current action ended
 // failed (GET /v1/terminal/readers/{id}, action.status).
 func (c *terminalCharger) readerActionFailed() bool {
-	body, ok := c.api.call("GET", "/v1/terminal/readers/"+c.readerID, "", "")
+	body, _, ok := c.api.call("GET", "/v1/terminal/readers/"+c.readerID, "", "")
 	if !ok {
 		return false
 	}
@@ -241,7 +249,7 @@ func (c *terminalCharger) status(pi string) string {
 // reader was declined, Stripe's reason (decline_code, else code) from
 // last_payment_error; "" when none or the request failed.
 func (c *terminalCharger) state(pi string) (status, declined string) {
-	body, ok := c.api.call("GET", "/v1/payment_intents/"+pi, "", "")
+	body, _, ok := c.api.call("GET", "/v1/payment_intents/"+pi, "", "")
 	if !ok {
 		return "", ""
 	}
@@ -290,7 +298,7 @@ func (c *terminalCharger) settle(pi string, readFirst, cancelReader bool) string
 	for {
 		// Re-sent each round: a processing PaymentIntent refuses the cancel,
 		// but one whose card was declined goes back to collectable.
-		body, ok := c.api.call("POST", "/v1/payment_intents/"+pi+"/cancel", "", "")
+		body, _, ok := c.api.call("POST", "/v1/payment_intents/"+pi+"/cancel", "", "")
 		if ok {
 			var p struct {
 				Status string `json:"status"`
