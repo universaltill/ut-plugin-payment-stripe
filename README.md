@@ -93,6 +93,28 @@ finish a `refund_partial` the same day. Reversals ignore `refund_amount`. Per-le
 refunds are tested against fakes of Stripe's documented behaviour, not a live
 account.
 
+## Reader per call and reader state (v1.9.0, ut-docs#6566)
+
+A till with a reader registry names the Terminal reader for each card sale
+(`reader_id` in the authorize payload). The plugin uses it instead of
+`stripe_reader_id`; with no `reader_id` (an older till, or a single-reader
+till) it uses the setting exactly as before, so v1.x stays backward compatible.
+The id must look like `tmr_` plus 1 to 64 letters or digits. A payload id that
+does not is declined with `invalid_reader` before any Stripe call, and the
+setting is **not** used instead (that would charge a different physical
+reader). The id goes into a Stripe URL path, which is why it is checked.
+
+The plugin also answers the read-only hook `payment.stripe.readers`
+(`{"op":"state","readers":["tmr_..."]}`, at most 16 per call) with
+`ready`, `busy` (a reader action is in progress), `offline`, or `unknown`
+(any unclear answer, or a rejected key). A reader Stripe does not know is
+`offline` with `reader_unreachable`. Nothing is changed on the reader.
+
+Refunds still go by the original charge (`transaction_ref`). A `reader_id` on
+`original_payments[]` is accepted and ignored: a removed or offline reader
+never blocks a refund. Amounts stay integer minor units; reader ids are logged
+masked (last 4) at most.
+
 ## Build
 
 ```sh

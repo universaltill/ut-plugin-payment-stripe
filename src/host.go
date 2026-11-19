@@ -100,6 +100,9 @@ type origPayment struct {
 	// RefundAmount is what core allocated to this leg (only sent with 2 or
 	// more legs of the method); nil = absent, so 0 is distinguishable.
 	RefundAmount *int64 `json:"refund_amount,omitempty"`
+	// ReaderID is the reader the leg was paid on (ut-docs#6566): context only,
+	// never used to route or validate a refund, which goes by TransactionRef.
+	ReaderID string `json:"reader_id,omitempty"`
 }
 
 type eventPayload struct {
@@ -110,6 +113,10 @@ type eventPayload struct {
 	Reversal           bool          `json:"reversal"`
 	AuthorizeRequestID string        `json:"authorize_request_id"`
 	TransactionRef     string        `json:"transaction_ref"`
+	ReaderID           string        `json:"reader_id"`   // ut-docs#6566: per-call reader (authorize)
+	ReaderKind         string        `json:"reader_kind"` // display only
+	Op                 string        `json:"op"`          // payment.stripe.readers: "state"
+	Readers            []string      `json:"readers"`     // payment.stripe.readers: refs to check
 	OriginalPayments   []origPayment `json:"original_payments"`
 	EventID            string        `json:"-"` // the event's own id, set by parseEvent
 }
