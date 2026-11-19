@@ -307,6 +307,13 @@ func main() {
 	}
 	persistResult = !strings.HasSuffix(ev.Type, ".refund")
 
+	// Reader state for the till's picker (ut-docs#6566): read-only, always
+	// exit 0 (core reads "unknown" for anything it cannot parse).
+	if strings.HasSuffix(ev.Type, ".readers") {
+		persistResult = false
+		readersHook(ev.Payload)
+	}
+
 	sk := strings.TrimSpace(setting("stripe_secret_key"))
 	if sk == "" {
 		decline(amount, "", "no_secret_key")
@@ -328,7 +335,13 @@ func main() {
 		decline(amount, declinedCurrency(savedCurrency, ev.Payload.Currency, shop), currencyDecline)
 	}
 
-	if readerID := strings.TrimSpace(setting("stripe_reader_id")); readerID != "" {
+	// Reader (ut-docs#6566): the till's per-call reader_id wins; a missing one
+	// falls back to the setting. A malformed one declines, no fallback.
+	readerID, readerDecline := chooseReader(ev.Payload.ReaderID, setting("stripe_reader_id"))
+	if readerDecline != "" {
+		decline(amount, "", readerDecline)
+	}
+	if readerID != "" {
 		c := &terminalCharger{
 			api: hostStripe{sk: sk}, clk: realClock{}, kv: pluginKV,
 			sk: sk, currency: currency, readerID: readerID,
@@ -341,6 +354,29 @@ func main() {
 		}
 	}
 	onlineCharge(sk, currency, amount)
+}
+
+// readersHook answers payment.stripe.readers and exits 0. Without a secret key
+// every reader is "unknown" (invalid_secret_key reason).
+func readersHook(p eventPayload) {
+	sk := strings.TrimSpace(setting("stripe_secret_key"))
+	var out []byte
+	if sk == "" {
+		rows := []readerState{}
+		if p.Op == "state" {
+			for i, r := range p.Readers {
+				if i >= maxStateReaders {
+					break
+				}
+				rows = append(rows, readerState{ReaderID: r, State: "unknown", Reason: "no_secret_key"})
+			}
+		}
+		out, _ = json.Marshal(map[string]any{"readers": rows})
+	} else {
+		out = readersAnswer(hostStripe{sk: sk}, p)
+	}
+	_, _ = os.Stdout.Write(append(out, '\n'))
+	os.Exit(approved)
 }
 
 // refundCharge refunds (part of) the original sale's PaymentIntent, found via
