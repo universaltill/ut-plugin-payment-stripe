@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Validates the payment-plugin manifest: marketplace-required fields
 # (id/name/semver/permissions/locales), asset-only runtime, and exactly one
-# type="payment" entry with a trigger_event.
+# non-tap type="payment" entry (plus tap entries) with a trigger_event.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 python3 - <<'PY'
@@ -21,12 +21,16 @@ if m.get("runtime") == "wasm":
 if m.get("device_arch") != "any": errs.append("device_arch must be 'any'")
 if m.get("canonical_type") != "payment": errs.append("canonical_type must be 'payment'")
 pays = [e for e in m.get("entries", []) if e.get("type") == "payment"]
-if len(pays) != 1:
-    errs.append(f"expected exactly 1 payment entry, got {len(pays)}")
-else:
-    if not pays[0].get("key"): errs.append("payment entry missing key")
-    if not pays[0].get("label"): errs.append("payment entry missing label")
-    if not pays[0].get("trigger_event"): errs.append("payment entry missing trigger_event")
+plain = [e for e in pays if not (e.get("config") or {}).get("tap")]
+if len(plain) != 1:
+    errs.append(f"expected exactly 1 non-tap payment entry, got {len(plain)}")
+for e in pays:
+    if not e.get("key"): errs.append("payment entry missing key")
+    if not e.get("label"): errs.append("payment entry missing label")
+    if not e.get("trigger_event"): errs.append("payment entry missing trigger_event")
+    if (e.get("config") or {}).get("tap"):
+        for perm in ("device:tap_to_pay", "net:payment_broker"):
+            if perm not in m.get("permissions", []): errs.append(f"tap entry needs {perm}")
 if errs:
     print("FAIL: " + "; ".join(errs)); sys.exit(1)
 print(f"ok {m['id']} v{m['version']}")

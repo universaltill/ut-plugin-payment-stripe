@@ -120,3 +120,7 @@ masked (last 4) at most.
 ```sh
 bash scripts/build.sh   # -> bin/plugin.wasm (GOOS=wasip1 GOARCH=wasm)
 ```
+
+## Tap to Pay on iPhone (stripe_tap, v1.10.0)
+
+A second payment entry, "Tap to Pay on iPhone", for a till whose phone is the card reader. It needs the permissions `device:tap_to_pay` and `net:payment_broker`, which a manager grants (they are not granted automatically). It holds no Stripe key and never calls Stripe itself: it asks the till's payment broker, which confirms every payment before a sale completes. The `net:api.stripe.com` permission stays for the original "Card (Stripe)" entry only. Needs till 0.36.3 or newer.

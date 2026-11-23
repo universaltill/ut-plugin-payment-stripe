@@ -22,5 +22,6 @@
   "payment_stripe.currency.opt.ron": "RON – Romanian leu",
   "payment_stripe.currency.opt.sek": "SEK – Swedish krona",
   "payment_stripe.currency.opt.try": "₺ TRY – Turkish lira",
-  "payment_stripe.currency.opt.usd": "$ USD – US dollar"
+  "payment_stripe.currency.opt.usd": "$ USD – US dollar",
+  "payment_stripe.tap.label": "Tap to Pay on iPhone"
 }
