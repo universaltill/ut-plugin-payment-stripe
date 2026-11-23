@@ -305,6 +305,11 @@ func main() {
 		settleSale(pluginKV, pluginLinks, ev.Payload, time.Now())
 		os.Exit(0)
 	}
+	// Tap to Pay on iPhone entry (stripe_tap): no Stripe key, everything goes
+	// through core's broker. Must run before the no_secret_key decline below.
+	if isTapEvent(ev.Type) {
+		tapMain(ev)
+	}
 	persistResult = !strings.HasSuffix(ev.Type, ".refund")
 
 	// Reader state for the till's picker (ut-docs#6566): read-only, always
