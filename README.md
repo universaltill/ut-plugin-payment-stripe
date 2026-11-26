@@ -115,6 +115,10 @@ Refunds still go by the original charge (`transaction_ref`). A `reader_id` on
 never blocks a refund. Amounts stay integer minor units; reader ids are logged
 masked (last 4) at most.
 
+## Testing against a simulated reader (v1.10.1, ut-docs#7081)
+
+An opt-in test (`go test -tags stripelive`) registers Stripe's simulated S700 reader in test mode and runs the plugin's real sale, decline, timeout, refund and reader-state code against it. It needs a Stripe TEST secret key (`sk_test_...`) in `STRIPE_TEST_TERMINAL_KEY` and skips without it; it never runs in normal CI or for merchants. See `docs/simulated-reader.md`.
+
 ## Build
 
 ```sh

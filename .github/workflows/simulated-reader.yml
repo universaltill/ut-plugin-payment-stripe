@@ -1,0 +1,48 @@
+name: Simulated reader (Stripe test mode)
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1' # weekly, Monday
+permissions:
+  contents: read
+concurrency:
+  group: simulated-reader
+  cancel-in-progress: false
+jobs:
+  live:
+    if: github.ref == 'refs/heads/main'
+    environment: stripe-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check secret
+        id: key
+        env:
+          STRIPE_TEST_TERMINAL_KEY: "${{ secrets.STRIPE_TEST_TERMINAL_KEY }}"
+        run: |
+          if [ -z "${STRIPE_TEST_TERMINAL_KEY}" ]; then
+            echo "::notice title=Simulated reader skipped::skipped: no STRIPE_TEST_TERMINAL_KEY secret (owner adds a Stripe TEST sk_test_ key; see docs/simulated-reader.md)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "${STRIPE_TEST_TERMINAL_KEY}" in
+            sk_test_*) echo "run=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "::error::STRIPE_TEST_TERMINAL_KEY is not a test-mode secret key (sk_test_); refusing"
+              exit 1
+              ;;
+          esac
+      - uses: actions/checkout@v7
+        if: steps.key.outputs.run == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        if: steps.key.outputs.run == 'true'
+        with:
+          go-version-file: go.mod
+      - name: Live simulated S700 run
+        if: steps.key.outputs.run == 'true'
+        env:
+          STRIPE_TEST_TERMINAL_KEY: "${{ secrets.STRIPE_TEST_TERMINAL_KEY }}"
+          STRIPE_TEST_TERMINAL_LOCATION: "${{ vars.STRIPE_TEST_TERMINAL_LOCATION }}"
+        run: go test -tags stripelive -count=1 -v -timeout 10m -run '^TestSimulated' ./src/...

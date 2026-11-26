@@ -6,9 +6,10 @@ package main
 // paths and form bodies, Idempotency-Key semantics, reply shapes. NOT
 // covered: headers/auth and the base URL (httpStripe stands in for main.go's
 // wasip1-only stripeCallIdem). It is NOT a recording of Stripe: the test-mode
-// Terminal key (Key Vault stripe-test-terminal-key) did not exist when this
-// was written, so the simulated-reader run against real Stripe (#6440, #3055)
-// is still to do. No key here is real.
+// Terminal key did not exist when this was written. The simulated-reader run
+// against real Stripe test mode (#6440, #3055) is in simreader_live_test.go
+// (build tag stripelive, ut-docs#7081; docs/simulated-reader.md). No key here
+// is real.
 
 import (
 	"bytes"
