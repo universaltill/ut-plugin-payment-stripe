@@ -20,6 +20,11 @@ jobs:
         # Host GOOS/GOARCH: only the untagged terminal.go flow and its tests
         # compile here; main.go's wasip1-only host imports don't (ut-docs#6304).
         run: go test ./...
+      - name: Compile + skip-check the live simulated-reader test (ut-docs#7081)
+        # No secret here: proves the stripelive file compiles and skips green without a key.
+        run: |
+          go vet -tags stripelive ./...
+          go test -tags stripelive -count=1 -run '^TestSimulated' ./...
       - name: gofmt check
         run: |
           fmt_out=$(gofmt -l .)
