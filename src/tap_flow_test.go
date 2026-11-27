@@ -440,7 +440,7 @@ func TestTapManifest(t *testing.T) {
 		} `json:"hooks"`
 	}
 	_ = json.Unmarshal(raw, &m)
-	if m.Version != "1.10.1" || m.MinPOS != "0.36.3" {
+	if m.Version != "1.10.2" || m.MinPOS != "0.36.3" {
 		t.Fatalf("version %q min_pos %q", m.Version, m.MinPOS)
 	}
 	has := func(p string) bool {
